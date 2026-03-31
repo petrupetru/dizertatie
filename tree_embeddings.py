@@ -26,6 +26,7 @@ def create_tree_embeddings(df):
         'n_estimators': 80,
         'max_depth': 9,
         'random_state': SEED,
+        'seed': SEED,
         'objective': 'reg:squarederror',
         'verbosity': 0
     }

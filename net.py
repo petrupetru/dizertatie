@@ -8,6 +8,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
+from utils import set_seed, seed_worker
 
 
 class DNN(nn.Module):
@@ -132,7 +133,8 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
         cv_results:  Dict with per-fold metrics and their mean/std.
     """
 
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=None)
+    set_seed(SEED)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
     labels = df[LABEL_NAME].values
 
     fold_aurocs = []
@@ -153,8 +155,25 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
 
         train_dataset = BreastCancerDataset(fold_train_df)
         val_dataset   = BreastCancerDataset(fold_val_df)
-        train_loader  = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader    = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False)
+
+        fold_seed = SEED + fold
+        g = torch.Generator()
+        g.manual_seed(fold_seed)
+
+        train_loader  = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            generator=g,
+            worker_init_fn=seed_worker,
+        )
+        val_loader    = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            generator=g,
+            worker_init_fn=seed_worker,
+        )
 
         model = model_class().to(device)
         train(model, train_loader, val_loader, num_epochs=num_epochs, lr=lr, device=device)

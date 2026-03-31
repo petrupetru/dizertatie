@@ -8,6 +8,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
+from utils import set_seed, seed_worker
 import xgboost as xgb
 
 class TN_DNN(nn.Module):
@@ -22,12 +23,21 @@ class TN_DNN(nn.Module):
 
         self.num_groups = num_groups
         self.trees_per_group = num_trees // num_groups
+        self.max_leaves_per_tree = max_leaves_per_tree
         self.leaves_per_group = self.trees_per_group * max_leaves_per_tree
+        self.register_buffer(
+            "tree_offsets",
+            torch.arange(self.trees_per_group, dtype=torch.long).unsqueeze(0) * self.max_leaves_per_tree,
+        )
 
         self.group_embeddings = nn.ModuleList([
             nn.Embedding(self.leaves_per_group, embedding_dim) for _ in range(num_groups)
         ])
         group_input_dim = self.trees_per_group * embedding_dim
+
+        g = torch.Generator()
+        g.manual_seed(SEED)
+        self.register_buffer("tree_perm", torch.randperm(num_trees, generator=g))
         
         self.fc1 = nn.Linear(group_input_dim, 32)
         self.fc2 = nn.Linear(32, 16)
@@ -40,15 +50,21 @@ class TN_DNN(nn.Module):
         # input shape: (batch_size, num_trees)
         batch_size = input.size(0)
 
+        input = input[:, self.tree_perm]
+
         # Separate the raw indices into distinct groups
         # Shape: (batch_size, num_groups, trees_per_group)
-        L_T_X = input.view(batch_size, self.num_groups, self.trees_per_group)
+        L_T_X = input.reshape(batch_size, self.num_groups, self.trees_per_group)
 
         group_dnn_outputs = []
 
         for i in range(self.num_groups):
             # Extract indices for the current group
             group_indices = L_T_X[:, i, :]
+
+            # Add a tree-specific offset so leaf ids from different trees
+            # map to disjoint embedding ranges within a group.
+            group_indices = group_indices + self.tree_offsets
 
             # Apply embedding for the current group
             group_embeddings = self.group_embeddings[i](group_indices)
@@ -184,7 +200,8 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
         A dictionary containing the AUROC and AUPRC for each fold, as well as the mean and standard deviation of these metrics across folds.
     """
 
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=None)
+    set_seed(SEED)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
     labels = df[LABEL_NAME].values
 
     fold_aurocs = []
@@ -211,11 +228,29 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
         train_dataset = TreeEmbedDataset(leaf_indices_train, labels_train)
         val_dataset   = TreeEmbedDataset(leaf_indices_val, labels_val)
 
-        train_loader  = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader    = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False)
+        fold_seed = SEED + fold
+        g = torch.Generator()
+        g.manual_seed(fold_seed)
 
-        max_leaf_index = int(max(np.max(leaf_indices_train), np.max(leaf_indices_val)))
-        num_groups = 10 if num_trees % 10 == 0 else 5
+        train_loader  = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            generator=g,
+            worker_init_fn=seed_worker,
+        )
+        val_loader    = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            generator=g,
+            worker_init_fn=seed_worker,
+        )
+
+        tree_df = xgb_model.trees_to_dataframe()
+        leaf_nodes = tree_df[tree_df["Feature"] == "Leaf"]
+        max_leaf_index = int(leaf_nodes["Node"].max()) if not leaf_nodes.empty else 0
+        num_groups = 10
         max_leaves_per_tree = max(1, max_leaf_index + 1)
 
         model = model_class(

@@ -4,7 +4,7 @@ import numpy as np
 import xgboost as xgb
 
 from constants import DATA_FILE_BREAST_CANCER, COLUMN_NAMES, FEATURE_NAMES, LABEL_NAME, SEED
-from utils import read_data_to_df, create_sparsity
+from utils import read_data_to_df, create_sparsity, set_seed
 from net import DNN, train_kfold
 from TN_net import TN_DNN, train_kfold as train_kfold_tn
 from tree_embeddings import create_tree_embeddings
@@ -15,6 +15,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 
 
 if __name__ == "__main__":
+    set_seed(SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     df = read_data_to_df(DATA_FILE_BREAST_CANCER, COLUMN_NAMES)
@@ -22,7 +23,7 @@ if __name__ == "__main__":
     df_sparse_40 = create_sparsity(df, FEATURE_NAMES, sparsity_level=0.4, random_state=SEED)
 
     # Select the dataset to use: df, df_sparse_20, or df_sparse_40
-    df_to_use = df
+    df_to_use = df_sparse_40
     df_to_use[FEATURE_NAMES] = df_to_use[FEATURE_NAMES].apply(pd.to_numeric, errors="coerce")
 
     cv_results_tn = train_kfold_tn(
