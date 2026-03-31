@@ -33,6 +33,7 @@ if __name__ == "__main__":
         num_epochs=25,
         lr=1e-3,
         device=device,
+        verbose=False
     )
     print(f"TN-DNN CV AUROC: {cv_results_tn['mean_auroc']:.4f} +/- {cv_results_tn['std_auroc']:.4f}")
     print(f"TN-DNN CV AUPRC: {cv_results_tn['mean_auprc']:.4f} +/- {cv_results_tn['std_auprc']:.4f}")

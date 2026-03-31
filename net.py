@@ -44,7 +44,7 @@ class BreastCancerDataset(Dataset):
         return self.X[idx], self.y[idx]
     
 
-def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu"):
+def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True):
     model.to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -77,14 +77,15 @@ def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu")
         train_loss /= len(train_loader.dataset)
         val_loss /= len(val_loader.dataset)
 
-        print(
-            f"Epoch [{epoch:3d}/{num_epochs}] "
-            f"Train MSE Loss: {train_loss:.4f}  "
-            f"Val MSE Loss: {val_loss:.4f}"
-        )
+        if verbose:
+            print(
+                f"Epoch [{epoch:3d}/{num_epochs}] "
+                f"Train MSE Loss: {train_loss:.4f}  "
+                f"Val MSE Loss: {val_loss:.4f}"
+            )
 
 
-def test(model, test_loader, device="cpu"):
+def test(model, test_loader, device="cpu", verbose=True):
     model.to(device)
     model.eval()
 
@@ -104,12 +105,13 @@ def test(model, test_loader, device="cpu"):
     auroc = roc_auc_score(all_labels, all_probs)
     auprc = average_precision_score(all_labels, all_probs)
 
-    print(f"Test AUROC:    {auroc:.4f}")
-    print(f"Test AUPRC:    {auprc:.4f}")
+    if verbose:
+        print(f"Test AUROC:    {auroc:.4f}")
+        print(f"Test AUPRC:    {auprc:.4f}")
 
     return {"auroc": auroc, "auprc": auprc}
 
-def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=32, device="cpu"):
+def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=32, device="cpu", verbose=True):
     """
     Performs k-fold cross-validation on the full dataset.
 
@@ -128,7 +130,7 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
         lr:           Learning rate.
         batch_size:   Batch size.
         device:       "cpu" or "cuda".
-
+        verbose:      Whether to print training progress and results.
     Returns:
         cv_results:  Dict with per-fold metrics and their mean/std.
     """
@@ -141,9 +143,10 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
     fold_auprcs = []
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
-        print(f"\n{'='*50}")
-        print(f"  Fold {fold}/{n_splits}")
-        print(f"{'='*50}")
+        if verbose:
+            print(f"\n{'='*50}")
+            print(f"  Fold {fold}/{n_splits}")
+            print(f"{'='*50}")
 
         fold_train_df = df.iloc[train_idx].copy()
         fold_val_df   = df.iloc[val_idx].copy()
@@ -176,24 +179,26 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
         )
 
         model = model_class().to(device)
-        train(model, train_loader, val_loader, num_epochs=num_epochs, lr=lr, device=device)
+        train(model, train_loader, val_loader, num_epochs=num_epochs, lr=lr, device=device, verbose=verbose)
 
-        metrics = test(model, val_loader, device=device)
+        metrics = test(model, val_loader, device=device, verbose=verbose)
         fold_aurocs.append(metrics["auroc"])
         fold_auprcs.append(metrics["auprc"])
 
-        print(f"Fold {fold} — AUROC: {metrics['auroc']:.4f}  AUPRC: {metrics['auprc']:.4f}")
+        if verbose:
+            print(f"Fold {fold} — AUROC: {metrics['auroc']:.4f}  AUPRC: {metrics['auprc']:.4f}")
 
     mean_auroc = np.mean(fold_aurocs)
     std_auroc  = np.std(fold_aurocs)
     mean_auprc = np.mean(fold_auprcs)
     std_auprc  = np.std(fold_auprcs)
 
-    print(f"\n{'='*50}")
-    print(f"  Cross-Validation Results ({n_splits} folds)")
-    print(f"  AUROC: {mean_auroc:.4f} ± {std_auroc:.4f}")
-    print(f"  AUPRC: {mean_auprc:.4f} ± {std_auprc:.4f}")
-    print(f"{'='*50}")
+    if verbose:
+        print(f"\n{'='*50}")
+        print(f"  Cross-Validation Results ({n_splits} folds)")
+        print(f"  AUROC: {mean_auroc:.4f} ± {std_auroc:.4f}")
+        print(f"  AUPRC: {mean_auprc:.4f} ± {std_auprc:.4f}")
+        print(f"{'='*50}")
 
     cv_results = {
         "fold_aurocs": fold_aurocs,
