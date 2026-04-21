@@ -9,6 +9,7 @@ from sklearn.model_selection import StratifiedKFold
 import numpy as np
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from utils import set_seed, seed_worker
+from datasets import BreastCancerDataset
 
 
 class DNN(nn.Module):
@@ -32,17 +33,6 @@ class DNN(nn.Module):
         return x
     
 
-class BreastCancerDataset(Dataset):
-    def __init__(self, df):
-        self.X = torch.tensor(df.drop(columns=["ID", "Diagnosis"]).values.astype(float), dtype=torch.float32)
-        self.y = torch.tensor(df["Diagnosis"].apply(lambda x: 1 if x == "M" else 0).values.astype(float), dtype=torch.float32).view(-1, 1)
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
-    
 
 def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True):
     model.to(device)

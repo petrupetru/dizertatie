@@ -109,17 +109,17 @@ class SDT(nn.Module):
         end_idx = 1
 
         for layer_idx in range(0, self.depth):
-            _path_prob = path_prob[:, begin_idx:end_idx, :]
+          _path_prob = path_prob[:, begin_idx:end_idx, :]
 
-            # Extract internal nodes in the current layer to compute the
-            # regularization term
-            _penalty = _penalty + self._cal_penalty(layer_idx, _mu, _path_prob)
-            _mu = _mu.view(batch_size, -1, 1).repeat(1, 1, 2)
+          # Extract internal nodes in the current layer to compute the
+          # regularization term
+          _penalty = _penalty + self._cal_penalty(layer_idx, _mu, _path_prob)
+          _mu = _mu.view(batch_size, -1, 1).repeat(1, 1, 2)
 
-            _mu = _mu * _path_prob  # update path probabilities
+          _mu = _mu * _path_prob  # update path probabilities
 
-            begin_idx = end_idx
-            end_idx = begin_idx + 2 ** (layer_idx + 1)
+          begin_idx = end_idx
+          end_idx = begin_idx + 2 ** (layer_idx + 1)
 
         mu = _mu.view(batch_size, self.leaf_node_num_)
 
@@ -129,17 +129,22 @@ class SDT(nn.Module):
         """
         Compute the regularization term for internal nodes in different layers.
         """
-
         penalty = torch.tensor(0.0).to(self.device)
+        eps = 1e-6
 
         batch_size = _mu.size()[0]
         _mu = _mu.view(batch_size, 2 ** layer_idx)
         _path_prob = _path_prob.view(batch_size, 2 ** (layer_idx + 1))
 
         for node in range(0, 2 ** (layer_idx + 1)):
-            alpha = torch.sum(
-                _path_prob[:, node] * _mu[:, node // 2], dim=0
-            ) / torch.sum(_mu[:, node // 2], dim=0)
+            numerator = torch.sum(
+              _path_prob[:, node] * _mu[:, node // 2], dim=0
+            )
+            denominator = torch.sum(_mu[:, node // 2], dim=0)
+            denominator = torch.clamp(denominator, min=eps)
+            alpha = numerator / denominator
+            # Avoid log(0) and keep alpha in a stable range.
+            alpha = torch.clamp(alpha, min=eps, max=1.0 - eps)
 
             coeff = self.penalty_list[layer_idx]
 

@@ -68,6 +68,12 @@ def create_sparsity(df, feature_columns, sparsity_level, random_state=None):
 
 
 
+def _assert_finite_tensor(name, tensor):
+    if not torch.isfinite(tensor).all():
+        nan_count = torch.isnan(tensor).sum().item()
+        inf_count = torch.isinf(tensor).sum().item()
+        raise ValueError(f"{name} has {nan_count} NaNs and {inf_count} Infs")
+
 if __name__ == "__main__":
 
     df = read_data_to_df(DATA_FILE_BREAST_CANCER, COLUMN_NAMES)

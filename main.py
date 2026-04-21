@@ -1,17 +1,9 @@
 import torch
 import pandas as pd
-import numpy as np
-import xgboost as xgb
 
-from constants import DATA_FILE_BREAST_CANCER, COLUMN_NAMES, FEATURE_NAMES, LABEL_NAME, SEED
+from constants import DATA_FILE_BREAST_CANCER, COLUMN_NAMES, FEATURE_NAMES, SEED
 from utils import read_data_to_df, create_sparsity, set_seed
-from net import DNN, train_kfold
-from TN_net import TN_DNN, train_kfold as train_kfold_tn
-from tree_embeddings import create_tree_embeddings
-
-
-# test imports
-from sklearn.metrics import roc_auc_score, average_precision_score
+from TN_net import TN_DNN, train_kfold as train_kfold_tn, train_kfold_TNT
 
 
 if __name__ == "__main__":
@@ -23,20 +15,23 @@ if __name__ == "__main__":
     df_sparse_40 = create_sparsity(df, FEATURE_NAMES, sparsity_level=0.4, random_state=SEED)
 
     # Select the dataset to use: df, df_sparse_20, or df_sparse_40
-    df_to_use = df_sparse_40
+    df_to_use = df
     df_to_use[FEATURE_NAMES] = df_to_use[FEATURE_NAMES].apply(pd.to_numeric, errors="coerce")
 
-    cv_results_tn = train_kfold_tn(
+    cv_results = train_kfold_TNT(
         df_to_use,
         TN_DNN,
         n_splits=5,
         num_epochs=25,
         lr=1e-3,
         device=device,
-        verbose=False
+        verbose=True,
+        distilation=True
     )
-    print(f"TN-DNN CV AUROC: {cv_results_tn['mean_auroc']:.4f} +/- {cv_results_tn['std_auroc']:.4f}")
-    print(f"TN-DNN CV AUPRC: {cv_results_tn['mean_auprc']:.4f} +/- {cv_results_tn['std_auprc']:.4f}")
+    print(f"TN-DNN CV AUROC: {cv_results['mean_auroc']:.4f} +/- {cv_results['std_auroc']:.4f}")
+    print(f"TN-DNN CV AUPRC: {cv_results['mean_auprc']:.4f} +/- {cv_results['std_auprc']:.4f}")
+    print(f"SDT CV AUROC: {cv_results['mean_sdt_auroc']:.4f} +/- {cv_results['std_sdt_auroc']:.4f}")
+    print(f"SDT CV AUPRC: {cv_results['mean_sdt_auprc']:.4f} +/- {cv_results['std_sdt_auprc']:.4f}")
 
     # # test the tree-based embeddings and evaluate the gbr performance
     # gbr, tree_embeddings = create_tree_embeddings(df_to_use)

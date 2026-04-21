@@ -2,14 +2,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from utils import set_seed, seed_worker
+from SDT import SDT
 import xgboost as xgb
+from utils import _assert_finite_tensor
+from tree_embeddings import train_xgb
+from datasets import TreeEmbedDataset
 
 class TN_DNN(nn.Module):
     """
@@ -87,38 +91,7 @@ class TN_DNN(nn.Module):
 
         # Collapse group-wise outputs to a single probability per sample.
         return torch.sigmoid(final_output.mean(dim=1, keepdim=True))
-    
-class TreeEmbedDataset(Dataset):
-    def __init__(self, leaf_indices, labels):
-        self.leaf_indices = torch.tensor(leaf_indices, dtype=torch.long)
-        self.labels = torch.tensor(labels, dtype=torch.float32).unsqueeze(1)
 
-    def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        return self.leaf_indices[idx], self.labels[idx]
-    
-def train_xgb(train_df):
-    X = train_df[FEATURE_NAMES].values
-    y = train_df[LABEL_NAME].values
-    y_encoded = np.where(y == 'M', 1, 0)
-
-    dtrain = xgb.DMatrix(X, label=y_encoded)
-
-    num_trees = 80
-
-    params = {
-        'n_estimators': num_trees,
-        'max_depth': 9,
-        'objective': 'reg:squarederror',
-        'verbosity': 0,
-        'seed': SEED
-    }
-
-    model = xgb.train(params, dtrain, num_boost_round=num_trees)
-
-    return model, num_trees
 
 
 def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True):
@@ -187,6 +160,126 @@ def test(model, test_loader, device="cpu", verbose=True):
         print(f"Test AUPRC:    {auprc:.4f}")
 
     return {"auroc": auroc, "auprc": auprc}
+
+
+
+def distill_sdt_fold(
+    teacher_model,
+    leaf_indices_train,
+    leaf_indices_val,
+    fold_train_df,
+    fold_val_df,
+    labels_train,
+    labels_val,
+    device,
+    batch_size,
+    num_epochs,
+    lr,
+    alpha=1.0,
+    depth=5,
+    lamda=1e-3,
+    seed=None,
+    verbose=True,
+):
+    teacher_model.eval()
+    with torch.no_grad():
+        X_teacher_train = torch.tensor(leaf_indices_train, dtype=torch.long, device=device)
+        X_teacher_val = torch.tensor(leaf_indices_val, dtype=torch.long, device=device)
+        y_teacher_train = teacher_model(X_teacher_train).cpu()
+        y_teacher_val = teacher_model(X_teacher_val).cpu()
+
+    _assert_finite_tensor("y_teacher_train", y_teacher_train)
+    _assert_finite_tensor("y_teacher_val", y_teacher_val)
+
+    X_train_raw = torch.tensor(
+        fold_train_df[FEATURE_NAMES].values, dtype=torch.float32
+    )
+    X_val_raw = torch.tensor(
+        fold_val_df[FEATURE_NAMES].values, dtype=torch.float32
+    )
+
+    _assert_finite_tensor("X_train_raw", X_train_raw)
+    _assert_finite_tensor("X_val_raw", X_val_raw)
+    y_train_true = torch.tensor(labels_train, dtype=torch.float32).unsqueeze(1)
+    y_val_true = torch.tensor(labels_val, dtype=torch.float32).unsqueeze(1)
+
+    sdt_train_ds = TensorDataset(X_train_raw, y_train_true, y_teacher_train)
+    sdt_val_ds = TensorDataset(X_val_raw, y_val_true)
+
+    g = None
+    if seed is not None:
+        g = torch.Generator()
+        g.manual_seed(seed)
+
+    sdt_train_loader = DataLoader(
+        sdt_train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=g,
+        worker_init_fn=seed_worker,
+    )
+    sdt_val_loader = DataLoader(
+        sdt_val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        generator=g,
+        worker_init_fn=seed_worker,
+    )
+
+    sdt = SDT(
+        input_dim=X_train_raw.shape[1],
+        output_dim=1,
+        depth=depth,
+        lamda=lamda,
+        use_cuda=(device == "cuda"),
+    ).to(device)
+
+    sdt_opt = optim.Adam(sdt.parameters(), lr=lr)
+    mse = nn.MSELoss()
+
+    for _ in range(1, num_epochs + 1):
+        sdt.train()
+        for xb, yb, ytb in sdt_train_loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+            ytb = ytb.to(device)
+
+            preds, penalty = sdt(xb, is_training_data=True)
+            preds = torch.sigmoid(preds)
+
+            _assert_finite_tensor("sdt_preds", preds)
+            if not torch.isfinite(penalty).item():
+                raise ValueError("sdt penalty is not finite")
+
+            loss = alpha * mse(preds, ytb) + (1 - alpha) * mse(preds, yb) + penalty
+            sdt_opt.zero_grad()
+            loss.backward()
+            sdt_opt.step()
+
+    sdt.eval()
+    sdt_probs = []
+    sdt_labels = []
+    with torch.no_grad():
+        for xb, yb in sdt_val_loader:
+            xb = xb.to(device)
+            preds = torch.sigmoid(sdt(xb)).cpu()
+            sdt_probs.append(preds)
+            sdt_labels.append(yb)
+
+    sdt_probs = torch.cat(sdt_probs).numpy().flatten()
+    sdt_labels = torch.cat(sdt_labels).numpy().flatten()
+
+    if not np.isfinite(sdt_probs).all():
+        raise ValueError("sdt_probs contains non-finite values")
+    if not np.isfinite(sdt_labels).all():
+        raise ValueError("sdt_labels contains non-finite values")
+    sdt_auroc = roc_auc_score(sdt_labels, sdt_probs)
+    sdt_auprc = average_precision_score(sdt_labels, sdt_probs)
+
+    if verbose:
+        print(f"SDT AUROC: {sdt_auroc:.4f}  AUPRC: {sdt_auprc:.4f}")
+
+    return {"auroc": sdt_auroc, "auprc": sdt_auprc}
 
 def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=32, device="cpu", verbose=True):
     """
@@ -313,6 +406,8 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
 
     fold_aurocs = []
     fold_auprcs = []
+    fold_sdt_aurocs = []
+    fold_sdt_auprcs = []
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
         if verbose:
@@ -375,8 +470,28 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
 
         if verbose:
             print(f"Fold {fold} — AUROC: {metrics['auroc']:.4f}  AUPRC: {metrics['auprc']:.4f}")
-
-            
+        if distilation:
+            sdt_seed = SEED + 1000 + fold
+            sdt_metrics = distill_sdt_fold(
+                teacher_model=model,
+                leaf_indices_train=leaf_indices_train,
+                leaf_indices_val=leaf_indices_val,
+                fold_train_df=fold_train_df,
+                fold_val_df=fold_val_df,
+                labels_train=labels_train,
+                labels_val=labels_val,
+                device=device,
+                batch_size=batch_size,
+                num_epochs=num_epochs,
+                lr=lr,
+                alpha=0.5,
+                depth=6,
+                lamda=1e-3,
+                seed=sdt_seed,
+                verbose=verbose,
+            )
+            fold_sdt_aurocs.append(sdt_metrics["auroc"])
+            fold_sdt_auprcs.append(sdt_metrics["auprc"])
 
     mean_auroc = np.mean(fold_aurocs)
     std_auroc  = np.std(fold_aurocs)
@@ -398,5 +513,13 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
         "mean_auprc": mean_auprc,
         "std_auprc":  std_auprc,
     }
+
+    if distilation:
+        cv_results["fold_sdt_aurocs"] = fold_sdt_aurocs
+        cv_results["fold_sdt_auprcs"] = fold_sdt_auprcs
+        cv_results["mean_sdt_auroc"] = float(np.mean(fold_sdt_aurocs))
+        cv_results["std_sdt_auroc"] = float(np.std(fold_sdt_aurocs))
+        cv_results["mean_sdt_auprc"] = float(np.mean(fold_sdt_auprcs))
+        cv_results["std_sdt_auprc"] = float(np.std(fold_sdt_auprcs))
 
     return cv_results
