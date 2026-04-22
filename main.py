@@ -24,13 +24,14 @@ if __name__ == "__main__":
         TN_DNN,
         n_splits=5,
         num_epochs=25,
+        num_epochs_dgbdt=25,
         lr=1e-3,
         device=device,
         verbose=True,
-        alpha=0.5,
+        alpha=0.75,
         temperature=1.0,
         dgbdt_num_trees=5,
-        dgbdt_depth=5,
+        dgbdt_depth=6,
         dgbdt_lamda=1e-3,
     )
     print(f"TN-DNN CV AUROC: {cv_results['mean_teacher_auroc']:.4f} +/- {cv_results['std_teacher_auroc']:.4f}")
