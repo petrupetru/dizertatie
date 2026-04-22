@@ -3,7 +3,8 @@ import pandas as pd
 
 from constants import DATA_FILE_BREAST_CANCER, COLUMN_NAMES, FEATURE_NAMES, SEED
 from utils import read_data_to_df, create_sparsity, set_seed
-from TN_net import TN_DNN, train_kfold as train_kfold_tn, train_kfold_TNT
+from TN_net import TN_DNN
+from dGBT_generated import train_kfold_tnt_dgbdt
 
 
 if __name__ == "__main__":
@@ -18,7 +19,7 @@ if __name__ == "__main__":
     df_to_use = df
     df_to_use[FEATURE_NAMES] = df_to_use[FEATURE_NAMES].apply(pd.to_numeric, errors="coerce")
 
-    cv_results = train_kfold_TNT(
+    cv_results = train_kfold_tnt_dgbdt(
         df_to_use,
         TN_DNN,
         n_splits=5,
@@ -26,12 +27,16 @@ if __name__ == "__main__":
         lr=1e-3,
         device=device,
         verbose=True,
-        distilation=True
+        alpha=0.5,
+        temperature=1.0,
+        dgbdt_num_trees=5,
+        dgbdt_depth=5,
+        dgbdt_lamda=1e-3,
     )
-    print(f"TN-DNN CV AUROC: {cv_results['mean_auroc']:.4f} +/- {cv_results['std_auroc']:.4f}")
-    print(f"TN-DNN CV AUPRC: {cv_results['mean_auprc']:.4f} +/- {cv_results['std_auprc']:.4f}")
-    print(f"SDT CV AUROC: {cv_results['mean_sdt_auroc']:.4f} +/- {cv_results['std_sdt_auroc']:.4f}")
-    print(f"SDT CV AUPRC: {cv_results['mean_sdt_auprc']:.4f} +/- {cv_results['std_sdt_auprc']:.4f}")
+    print(f"TN-DNN CV AUROC: {cv_results['mean_teacher_auroc']:.4f} +/- {cv_results['std_teacher_auroc']:.4f}")
+    print(f"TN-DNN CV AUPRC: {cv_results['mean_teacher_auprc']:.4f} +/- {cv_results['std_teacher_auprc']:.4f}")
+    print(f"dGBDT  CV AUROC: {cv_results['mean_dgbdt_auroc']:.4f} +/- {cv_results['std_dgbdt_auroc']:.4f}")
+    print(f"dGBDT  CV AUPRC: {cv_results['mean_dgbdt_auprc']:.4f} +/- {cv_results['std_dgbdt_auprc']:.4f}")
 
     # # test the tree-based embeddings and evaluate the gbr performance
     # gbr, tree_embeddings = create_tree_embeddings(df_to_use)

@@ -14,6 +14,15 @@ from tree_embeddings import train_xgb
 import xgboost as xgb
 
 from TN_net import TN_DNN, train, test
+import torch.nn.utils.parametrize as parametrize
+
+class PositiveParam(nn.Module):
+    def __init__(self, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x):
+        return torch.nn.functional.softplus(x) + self.eps
 
 class dGBDT(nn.Module):
     def __init__(self, input_dim, num_trees=5, tree_depth=3, lamda=1e-3, use_cuda=False):
@@ -31,7 +40,11 @@ class dGBDT(nn.Module):
             for _ in range(self.num_trees)
         ])
 
-    def forward(self, X, is_training_data=False):
+        self.beta = self.beta(torch.zeros(self.num_trees))
+        parametrize.register_parametrization(self, "beta", PositiveParam(eps=1e-6))
+
+
+    def forward(self, X, is_training_data=False, return_tree_outputs=False):
         # Forward the input through each tree and sum their outputs.
         tree_outputs = []
         penalties = []
@@ -43,13 +56,17 @@ class dGBDT(nn.Module):
                 output = tree(X, is_training_data=False)
             tree_outputs.append(output)
 
+        beta = self.beta.view(-1, 1, 1)
+        stacked = torch.stack(tree_outputs, dim=0)
+        ensemble_raw = torch.sum(beta * stacked, dim=0)
+
    
         if is_training_data:
-
-            return tree_outputs, penalties
-        else:
-            return tree_outputs
-        
+            return tree_outputs, penalties, ensemble_raw
+        if return_tree_outputs:
+            return tree_outputs, ensemble_raw
+        return ensemble_raw
+    
 def distill_dGBDT_fold(
     dgbt_model,
     teacher_model,
@@ -113,22 +130,21 @@ def distill_dGBDT_fold(
         generator=g,
         worker_init_fn=seed_worker,
     )
-
+    
+    optimizer = optim.Adam(dgbt_model.parameters(), lr=lr)
+    criterion = nn.MSELoss()
 
     for epoch in range(1, num_epochs + 1):
         # --- Training phase ---
         dgbt_model.train()
-        optimizer = optim.Adam(dgbt_model.parameters(), lr=lr)
         train_loss = 0.0
-
-        criterion = nn.MSELoss()
 
         cumulative_tree_loss = 0.0
 
         for X_batch, y_batch, y_t_batch in train_loader:
             X_batch, y_batch, y_t_batch = X_batch.to(device), y_batch.to(device), y_t_batch.to(device)
             optimizer.zero_grad()
-            tree_outputs, penalties = dgbt_model(X_batch, is_training_data=True)
+            tree_outputs, penalties, _ = dgbt_model(X_batch, is_training_data=True)
 
             # cumulative output s
             s = 0
