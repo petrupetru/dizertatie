@@ -6,6 +6,7 @@ from torch.utils.data import Dataset, DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from utils import set_seed, seed_worker
@@ -13,7 +14,7 @@ from SDT import SDT
 import xgboost as xgb
 from utils import _assert_finite_tensor
 from tree_embeddings import train_xgb
-from datasets import TreeEmbedDataset
+from cancer_datasets import TreeEmbedDataset
 
 class TN_DNN(nn.Module):
     """
@@ -50,7 +51,7 @@ class TN_DNN(nn.Module):
         self.fc5 = nn.Linear(8, 8)
         self.fc6 = nn.Linear(8, 1)
 
-    def forward(self, input):
+    def forward(self, input, return_logits=False):
         # input shape: (batch_size, num_trees)
         batch_size = input.size(0)
 
@@ -89,8 +90,12 @@ class TN_DNN(nn.Module):
         # Concatenate outputs from all groups
         final_output = torch.cat(group_dnn_outputs, dim=1)
 
-        # Collapse group-wise outputs to a single probability per sample.
-        return torch.sigmoid(final_output.mean(dim=1, keepdim=True))
+        # Collapse group-wise outputs to a single logit per sample.
+        logit = final_output.mean(dim=1, keepdim=True)
+
+        if return_logits:
+            return logit
+        return torch.sigmoid(logit)
 
 
 
@@ -188,8 +193,6 @@ def distill_sdt_fold(
         y_teacher_train = teacher_model(X_teacher_train).cpu()
         y_teacher_val = teacher_model(X_teacher_val).cpu()
 
-    _assert_finite_tensor("y_teacher_train", y_teacher_train)
-    _assert_finite_tensor("y_teacher_val", y_teacher_val)
 
     X_train_raw = torch.tensor(
         fold_train_df[FEATURE_NAMES].values, dtype=torch.float32
@@ -198,13 +201,12 @@ def distill_sdt_fold(
         fold_val_df[FEATURE_NAMES].values, dtype=torch.float32
     )
 
-    _assert_finite_tensor("X_train_raw", X_train_raw)
-    _assert_finite_tensor("X_val_raw", X_val_raw)
+
     y_train_true = torch.tensor(labels_train, dtype=torch.float32).unsqueeze(1)
     y_val_true = torch.tensor(labels_val, dtype=torch.float32).unsqueeze(1)
 
     sdt_train_ds = TensorDataset(X_train_raw, y_train_true, y_teacher_train)
-    sdt_val_ds = TensorDataset(X_val_raw, y_val_true)
+    sdt_val_ds = TensorDataset(X_val_raw, y_val_true, y_teacher_val)
 
     g = None
     if seed is not None:
@@ -237,8 +239,9 @@ def distill_sdt_fold(
     sdt_opt = optim.Adam(sdt.parameters(), lr=lr)
     mse = nn.MSELoss()
 
-    for _ in range(1, num_epochs + 1):
+    for epoch in range(1, num_epochs + 1):
         sdt.train()
+        train_running_loss = 0.0
         for xb, yb, ytb in sdt_train_loader:
             xb = xb.to(device)
             yb = yb.to(device)
@@ -255,12 +258,34 @@ def distill_sdt_fold(
             sdt_opt.zero_grad()
             loss.backward()
             sdt_opt.step()
+            train_running_loss += loss.item() * xb.size(0)
+
+        avg_train_loss = train_running_loss / len(sdt_train_loader.dataset)
+
+        # --- Validation loss ---
+        sdt.eval()
+        val_running_loss = 0.0
+        with torch.no_grad():
+            for xb, yb, ytb in sdt_val_loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                ytb = ytb.to(device)
+                preds_v, penalty_v = sdt(xb, is_training_data=True)
+                preds_v = torch.sigmoid(preds_v)
+                val_loss = alpha * mse(preds_v, ytb) + (1 - alpha) * mse(preds_v, yb) + penalty_v
+                val_running_loss += val_loss.item() * xb.size(0)
+        sdt.train()
+
+        avg_val_loss = val_running_loss / len(sdt_val_loader.dataset)
+
+        if verbose:
+            print(f"SDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}")
 
     sdt.eval()
     sdt_probs = []
     sdt_labels = []
     with torch.no_grad():
-        for xb, yb in sdt_val_loader:
+        for xb, yb, _ytb in sdt_val_loader:
             xb = xb.to(device)
             preds = torch.sigmoid(sdt(xb)).cpu()
             sdt_probs.append(preds)
@@ -418,16 +443,20 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
         fold_train_df = df.iloc[train_idx].copy()
         fold_val_df   = df.iloc[val_idx].copy()
 
-        # Convert to tree embeddings
+        scaler = StandardScaler()
+        fold_train_df[FEATURE_NAMES] = scaler.fit_transform(fold_train_df[FEATURE_NAMES])
+        fold_val_df[FEATURE_NAMES] = scaler.transform(fold_val_df[FEATURE_NAMES])
+
+        # XGBoost handles NaN natively, so pass raw data before imputation.
         xgb_model, num_trees = train_xgb(fold_train_df)
-        X = fold_train_df[FEATURE_NAMES].values
-        dtrain = xgb.DMatrix(X)
+        dtrain = xgb.DMatrix(fold_train_df[FEATURE_NAMES].values)
         leaf_indices_train = xgb_model.predict(dtrain, pred_leaf=True)
         labels_train = np.where(fold_train_df[LABEL_NAME].values == 'M', 1, 0)
         dval = xgb.DMatrix(fold_val_df[FEATURE_NAMES].values)
         leaf_indices_val = xgb_model.predict(dval, pred_leaf=True)
         labels_val = np.where(fold_val_df[LABEL_NAME].values == 'M', 1, 0)
-        
+
+
         train_dataset = TreeEmbedDataset(leaf_indices_train, labels_train)
         val_dataset   = TreeEmbedDataset(leaf_indices_val, labels_val)
 
@@ -493,33 +522,33 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
             fold_sdt_aurocs.append(sdt_metrics["auroc"])
             fold_sdt_auprcs.append(sdt_metrics["auprc"])
 
-    mean_auroc = np.mean(fold_aurocs)
-    std_auroc  = np.std(fold_aurocs)
-    mean_auprc = np.mean(fold_auprcs)
-    std_auprc  = np.std(fold_auprcs)
+    mean_teacher_auroc = np.mean(fold_aurocs)
+    std_teacher_auroc  = np.std(fold_aurocs)
+    mean_teacher_auprc = np.mean(fold_auprcs)
+    std_teacher_auprc  = np.std(fold_auprcs)
 
     if verbose:
         print(f"\n{'='*50}")
         print(f"  Cross-Validation Results ({n_splits} folds)")
-        print(f"  AUROC: {mean_auroc:.4f} ± {std_auroc:.4f}")
-        print(f"  AUPRC: {mean_auprc:.4f} ± {std_auprc:.4f}")
+        print(f"  AUROC: {mean_teacher_auroc:.4f} ± {std_teacher_auroc:.4f}")
+        print(f"  AUPRC: {mean_teacher_auprc:.4f} ± {std_teacher_auprc:.4f}")
         print(f"{'='*50}")
 
     cv_results = {
         "fold_aurocs": fold_aurocs,
         "fold_auprcs": fold_auprcs,
-        "mean_auroc": mean_auroc,
-        "std_auroc":  std_auroc,
-        "mean_auprc": mean_auprc,
-        "std_auprc":  std_auprc,
+        "mean_teacher_auroc": mean_teacher_auroc,
+        "std_teacher_auroc":  std_teacher_auroc,
+        "mean_teacher_auprc": mean_teacher_auprc,
+        "std_teacher_auprc":  std_teacher_auprc,
     }
 
     if distilation:
-        cv_results["fold_sdt_aurocs"] = fold_sdt_aurocs
-        cv_results["fold_sdt_auprcs"] = fold_sdt_auprcs
-        cv_results["mean_sdt_auroc"] = float(np.mean(fold_sdt_aurocs))
-        cv_results["std_sdt_auroc"] = float(np.std(fold_sdt_aurocs))
-        cv_results["mean_sdt_auprc"] = float(np.mean(fold_sdt_auprcs))
-        cv_results["std_sdt_auprc"] = float(np.std(fold_sdt_auprcs))
+        cv_results["fold_soft_tree_aurocs"] = fold_sdt_aurocs
+        cv_results["fold_soft_tree_auprcs"] = fold_sdt_auprcs
+        cv_results["mean_soft_tree_auroc"] = float(np.mean(fold_sdt_aurocs))
+        cv_results["std_soft_tree_auroc"] = float(np.std(fold_sdt_aurocs))
+        cv_results["mean_soft_tree_auprc"] = float(np.mean(fold_sdt_auprcs))
+        cv_results["std_soft_tree_auprc"] = float(np.std(fold_sdt_auprcs))
 
     return cv_results

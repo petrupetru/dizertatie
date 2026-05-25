@@ -5,13 +5,14 @@ import torch.optim as optim
 import torch.nn.utils.parametrize as parametrize
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 import xgboost as xgb
 
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from SDT import SDT
-from utils import _assert_finite_tensor, seed_worker, set_seed
-from datasets import TreeEmbedDataset
+from utils import seed_worker, set_seed
+from cancer_datasets import TreeEmbedDataset
 from tree_embeddings import train_xgb
 from TN_net import train, test
 
@@ -62,7 +63,9 @@ class dGBDT(nn.Module):
             ]
         )
 
-        self.beta = nn.Parameter(torch.zeros(self.num_trees))
+        # Initialize to -3 so softplus(-3) ≈ 0.049 per tree — small shrinkage
+        # coefficients consistent with gradient boosting convention (Friedman 2001).
+        self.beta = nn.Parameter(torch.full((self.num_trees,), -3.0))
         parametrize.register_parametrization(self, "beta", PositiveParam(eps=1e-6))
 
     def forward(self, x, is_training_data=False, return_tree_outputs=False):
@@ -77,15 +80,17 @@ class dGBDT(nn.Module):
                 out = tree(x, is_training_data=False)
             tree_outputs.append(out)
 
+        # Sum of probabilities: matches the pred_so_far accumulation in training.
+        # Each SDT outputs a logit; convert to probability before weighting.
         beta = self.beta.view(-1, 1, 1)
-        stacked = torch.stack(tree_outputs, dim=0)
-        ensemble_raw = torch.sum(beta * stacked, dim=0)
+        tree_probs = torch.stack([torch.sigmoid(o) for o in tree_outputs], dim=0)
+        ensemble_prob = torch.sum(beta * tree_probs, dim=0)
 
         if is_training_data:
-            return tree_outputs, penalties, ensemble_raw
+            return tree_outputs, penalties, ensemble_prob
         if return_tree_outputs:
-            return ensemble_raw, tree_outputs
-        return ensemble_raw
+            return ensemble_prob, tree_outputs
+        return ensemble_prob
 
 
 
@@ -111,31 +116,32 @@ def distill_dgbdt_fold(
 ):
     """Train dGBDT student from teacher soft labels for one CV fold.
 
-    The per-tree boosting target uses negative gradient style residuals for
-    the mixed distillation loss:
-      L = alpha*T^2*MSE(O_s, O_t) + (1-alpha)*MSE(O_s, y)
+    Follows the paper's distillation loss (Eq. 6):
+      dl = alpha*T^2*MSE(s_m, t) + (1-alpha)*MSE(s_m, y) + penalties
+    where t is the teacher probability (no temperature softening of logits),
+    s_m is the cumulative student probability after m trees, and T is used
+    only as a loss weight scaling hyperparameter.
     """
+
+    if temperature <= 0:
+        raise ValueError("temperature must be > 0")
 
     teacher_model.eval()
     with torch.no_grad():
         x_teacher_train = torch.tensor(leaf_indices_train, dtype=torch.long, device=device)
         x_teacher_val = torch.tensor(leaf_indices_val, dtype=torch.long, device=device)
+        # t^i in the paper: plain teacher probability, no temperature softening.
         y_teacher_train = teacher_model(x_teacher_train).cpu()
         y_teacher_val = teacher_model(x_teacher_val).cpu()
 
-    _assert_finite_tensor("y_teacher_train", y_teacher_train)
-    _assert_finite_tensor("y_teacher_val", y_teacher_val)
 
     x_train_raw = torch.tensor(fold_train_df[FEATURE_NAMES].values, dtype=torch.float32)
     x_val_raw = torch.tensor(fold_val_df[FEATURE_NAMES].values, dtype=torch.float32)
     y_train_true = torch.tensor(labels_train, dtype=torch.float32).unsqueeze(1)
     y_val_true = torch.tensor(labels_val, dtype=torch.float32).unsqueeze(1)
 
-    _assert_finite_tensor("x_train_raw", x_train_raw)
-    _assert_finite_tensor("x_val_raw", x_val_raw)
-
     train_ds = TensorDataset(x_train_raw, y_train_true, y_teacher_train)
-    val_ds = TensorDataset(x_val_raw, y_val_true)
+    val_ds = TensorDataset(x_val_raw, y_val_true, y_teacher_val)
 
     g = None
     if seed is not None:
@@ -168,9 +174,6 @@ def distill_dgbdt_fold(
     optimizer = optim.Adam(dgbdt.parameters(), lr=lr)
     mse = nn.MSELoss()
 
-    w_teacher = alpha * (temperature ** 2)
-    w_true = 1.0 - alpha
-
     epoch_losses = []
     for epoch in range(1, num_epochs + 1):
         dgbdt.train()
@@ -184,16 +187,28 @@ def distill_dgbdt_fold(
             optimizer.zero_grad()
             tree_outputs, penalties, _ = dgbdt(xb, is_training_data=True)
 
-            # Stage-wise residual fitting over the additive ensemble.
+            # t^i: teacher probability, used directly as in paper Eq. 6.
+            # T appears only as a loss weight (T^2 scaling), not for softening.
+            teacher_prob = ytb  # already a probability from teacher_model()
+
+            # Stage-wise residual boosting (Algorithm 2 in the TNT paper).
+            # pred_so_far = s^i_{m-1}: cumulative student output in probability space.
             pred_so_far = torch.zeros_like(yb)
             total_tree_loss = torch.tensor(0.0, device=device)
             beta = dgbdt.beta
 
             for m in range(dgbdt.num_trees):
-                residual_target = w_teacher * (ytb - pred_so_far.detach()) + w_true * (yb - pred_so_far.detach())
-                tree_loss = mse(tree_outputs[m], residual_target) + penalties[m]
+                # Negative gradient of dl w.r.t. s^i_{m-1} (paper Eq. 6, Alg. 2 line 6)
+                residual = (
+                    alpha * (temperature ** 2) * (teacher_prob - pred_so_far.detach())
+                    + (1.0 - alpha) * (yb - pred_so_far.detach())
+                )
+
+                # Convert SDT logit output to probability space to match s^i accumulation
+                tree_prob = torch.sigmoid(tree_outputs[m])
+                tree_loss = mse(tree_prob, residual) + penalties[m]
                 total_tree_loss = total_tree_loss + tree_loss
-                pred_so_far = pred_so_far + beta[m] * tree_outputs[m]
+                pred_so_far = pred_so_far + beta[m] * tree_prob  # accumulate in prob space
 
             total_tree_loss.backward()
             optimizer.step()
@@ -201,17 +216,47 @@ def distill_dgbdt_fold(
 
         avg_train_loss = running_loss / len(train_loader.dataset)
         epoch_losses.append(avg_train_loss)
+
+        # --- Validation loss ---
+        dgbdt.eval()
+        val_running_loss = 0.0
+        with torch.no_grad():
+            for xb, yb, ytb in val_loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                ytb = ytb.to(device)
+
+                tree_outputs_v, penalties_v, _ = dgbdt(xb, is_training_data=True)
+                teacher_prob_v = ytb
+                pred_so_far_v = torch.zeros_like(yb)
+                val_loss = torch.tensor(0.0, device=device)
+                beta_v = dgbdt.beta
+
+                for m in range(dgbdt.num_trees):
+                    residual_v = (
+                        alpha * (temperature ** 2) * (teacher_prob_v - pred_so_far_v)
+                        + (1.0 - alpha) * (yb - pred_so_far_v)
+                    )
+                    tree_prob_v = torch.sigmoid(tree_outputs_v[m])
+                    val_loss = val_loss + mse(tree_prob_v, residual_v) + penalties_v[m]
+                    pred_so_far_v = pred_so_far_v + beta_v[m] * tree_prob_v
+
+                val_running_loss += val_loss.item() * xb.size(0)
+        dgbdt.train()
+
+        avg_val_loss = val_running_loss / len(val_loader.dataset)
+
         if verbose:
-            print(f"dGBDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}")
+            print(f"dGBDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}")
 
     dgbdt.eval()
     probs = []
     labels = []
     with torch.no_grad():
-        for xb, yb in val_loader:
+        for xb, yb, _ytb in val_loader:
             xb = xb.to(device)
-            pred_raw = dgbdt(xb)
-            pred_prob = torch.sigmoid(pred_raw).cpu()
+            # forward() now returns sum of beta_m * sigmoid(logit_m) — already a score.
+            pred_prob = dgbdt(xb).cpu()
             probs.append(pred_prob)
             labels.append(yb)
 
@@ -245,6 +290,7 @@ def train_kfold_tnt_dgbdt(
     num_epochs=50,
     num_epochs_dgbdt=50,
     lr=1e-3,
+    lr_dgbdt=1e-3,
     batch_size=32,
     device="cpu",
     alpha=0.5,
@@ -273,6 +319,11 @@ def train_kfold_tnt_dgbdt(
         fold_train_df = df.iloc[train_idx].copy()
         fold_val_df = df.iloc[val_idx].copy()
 
+        scaler = StandardScaler()
+        fold_train_df[FEATURE_NAMES] = scaler.fit_transform(fold_train_df[FEATURE_NAMES])
+        fold_val_df[FEATURE_NAMES] = scaler.transform(fold_val_df[FEATURE_NAMES])
+
+        # XGBoost handles NaN natively, so pass raw data before imputation.
         xgb_model, num_trees = train_xgb(fold_train_df)
         dtrain = xgb.DMatrix(fold_train_df[FEATURE_NAMES].values)
         dval = xgb.DMatrix(fold_val_df[FEATURE_NAMES].values)
@@ -343,7 +394,7 @@ def train_kfold_tnt_dgbdt(
             device=device,
             batch_size=batch_size,
             num_epochs=num_epochs_dgbdt,
-            lr=lr,
+            lr=lr_dgbdt,
             seed=dgbdt_seed,
             alpha=alpha,
             temperature=temperature,

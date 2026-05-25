@@ -9,7 +9,7 @@ from sklearn.model_selection import StratifiedKFold
 import numpy as np
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from utils import set_seed, seed_worker
-from datasets import BreastCancerDataset
+from cancer_datasets import BreastCancerDataset
 
 
 class DNN(nn.Module):

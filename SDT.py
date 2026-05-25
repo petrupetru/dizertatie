@@ -71,7 +71,7 @@ class SDT(nn.Module):
         # Initialize internal nodes and leaf nodes, the input dimension on
         # internal nodes is added by 1, serving as the bias.
         self.inner_nodes = nn.Sequential(
-            nn.Linear(self.input_dim + 1, self.internal_node_num_, bias=False),
+            nn.Linear((self.input_dim * 2) + 1, self.internal_node_num_, bias=False),
             nn.Sigmoid(),
         )
 
@@ -156,8 +156,21 @@ class SDT(nn.Module):
         """Add a constant input `1` onto the front of each sample."""
         batch_size = X.size()[0]
         X = X.view(batch_size, -1)
+
+        ##ADD
+        ## 1. Create a binary mask of the missing values (1 if NaN, 0 otherwise)
+        missing_mask = torch.isnan(X).float()
+        
+        # 2. Replace NaNs with 0.0 so the network can safely multiply them
+        X_zero_filled = torch.nan_to_num(X, nan=0.0)
+        
+        # 3. Concatenate the features and the mask
+        # Shape becomes (batch_size, input_dim * 2)
+        X_combined = torch.cat((X_zero_filled, missing_mask), dim=1)
+
+
         bias = torch.ones(batch_size, 1).to(self.device)
-        X = torch.cat((bias, X), 1)
+        X = torch.cat((bias, X_combined), 1)
 
         return X
 
