@@ -8,5 +8,5 @@ ID_NAME = "ID"
 # Column names for the breast cancer dataset
 COLUMN_NAMES = [ID_NAME, LABEL_NAME] + FEATURE_NAMES
 
-DATA_FILE_BREAST_CANCER = "data\\breast+cancer+wisconsin+diagnostic\\wdbc.data"
+DATA_FILE_BREAST_CANCER = "CANCER\\data\\breast+cancer+wisconsin+diagnostic\\wdbc.data"
 SEED = 42

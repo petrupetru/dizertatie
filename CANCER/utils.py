@@ -20,7 +20,7 @@ def read_data_to_df(file, columns):
     data = [line.strip().split(",") for line in data]
     df = pd.DataFrame(data, columns=columns)
     #write data to csv file
-    df.to_csv("data\\breast_cancer_data.csv", index=False)
+    df.to_csv("CANCER\\data\\breast_cancer_data.csv", index=False)
     return df
 
 def set_seed(seed):
@@ -79,4 +79,4 @@ if __name__ == "__main__":
     df = read_data_to_df(DATA_FILE_BREAST_CANCER, COLUMN_NAMES)
     df_sparse_20 = create_sparsity(df, FEATURE_NAMES, sparsity_level=0.2, random_state=SEED).fillna(df[FEATURE_NAMES].mean())
     # Save the sparse datasets to CSV files
-    df_sparse_20.to_csv("data\\breast_cancer_data_sparse_20.csv", index=False)
+    df_sparse_20.to_csv("CANCER\\data\\breast_cancer_data_sparse_20.csv", index=False)

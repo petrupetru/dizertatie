@@ -6,7 +6,7 @@ from utils import read_data_to_df, create_sparsity, set_seed
 from TN_net import TN_DNN, train_kfold_TNT
 from dGBT_generated import train_kfold_tnt_dgbdt
 
-MODEL = "dgbdt"  # Options: "dgbdt", "tn_dnn", "tn_dgbdt", "soft_tree"
+MODEL = "dgbdt" # "dgbdt" or "soft_tree"
 
 if __name__ == "__main__":
     set_seed(SEED)
