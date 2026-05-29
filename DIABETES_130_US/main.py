@@ -2,11 +2,15 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
+
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import roc_auc_score, average_precision_score
-from tqdm import tqdm
+if os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None:
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
 
 from constants import DATA_FILE, SEED, FEATURE_NAMES, LABEL_NAME
 from diabetes_dataset import preprocess_diabetes

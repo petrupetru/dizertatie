@@ -7,8 +7,12 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
+
 import numpy as np
-from tqdm import tqdm
+if os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None:
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
 
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from utils import set_seed, seed_worker, make_run_key, try_load_results, save_results

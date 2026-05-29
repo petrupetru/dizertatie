@@ -7,9 +7,13 @@ import torch.nn.utils.parametrize as parametrize
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
+
 import numpy as np
 import xgboost as xgb
-from tqdm import tqdm
+if os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None:
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
 
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from SDT import SDT
