@@ -83,10 +83,14 @@ class TN_DNN(nn.Module):
         return torch.sigmoid(logit)
 
 
-def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True):
+def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True, patience=10):
     model.to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    best_val_loss = float("inf")
+    best_state = None
+    no_improve = 0
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -120,6 +124,20 @@ def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu",
                 f"Train MSE Loss: {train_loss:.4f}  "
                 f"Val MSE Loss: {val_loss:.4f}"
             )
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                if verbose:
+                    print(f"  Early stopping at epoch {epoch}")
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
 
 def test(model, test_loader, device="cpu", verbose=True):
@@ -167,6 +185,7 @@ def distill_sdt_fold(
     seed=None,
     verbose=True,
     save_path=None,
+    patience=5,
 ):
     teacher_model.eval()
     with torch.no_grad():
@@ -199,6 +218,7 @@ def distill_sdt_fold(
         shuffle=True,
         generator=g,
         worker_init_fn=seed_worker,
+        pin_memory=(device != "cpu"),
     )
     sdt_val_loader = DataLoader(
         sdt_val_ds,
@@ -206,6 +226,7 @@ def distill_sdt_fold(
         shuffle=False,
         generator=g,
         worker_init_fn=seed_worker,
+        pin_memory=(device != "cpu"),
     )
 
     sdt = SDT(
@@ -218,6 +239,10 @@ def distill_sdt_fold(
 
     sdt_opt = optim.Adam(sdt.parameters(), lr=lr)
     mse = nn.MSELoss()
+
+    best_val_loss = float("inf")
+    best_state = None
+    no_improve = 0
 
     for epoch in range(1, num_epochs + 1):
         sdt.train()
@@ -259,6 +284,20 @@ def distill_sdt_fold(
 
         if verbose:
             print(f"SDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_state = {k: v.clone() for k, v in sdt.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                if verbose:
+                    print(f"  Early stopping at epoch {epoch}")
+                break
+
+    if best_state is not None:
+        sdt.load_state_dict(best_state)
 
     sdt.eval()
     sdt_probs = []
@@ -341,6 +380,7 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
             shuffle=True,
             generator=g,
             worker_init_fn=seed_worker,
+            pin_memory=(device != "cpu"),
         )
         val_loader = DataLoader(
             val_dataset,
@@ -348,6 +388,7 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
             shuffle=False,
             generator=g,
             worker_init_fn=seed_worker,
+            pin_memory=(device != "cpu"),
         )
 
         tree_df = xgb_model.trees_to_dataframe()

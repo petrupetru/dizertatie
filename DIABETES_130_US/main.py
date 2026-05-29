@@ -2,6 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
+import torch
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
@@ -38,7 +39,7 @@ def train_kfold_xgb_baseline(df, n_splits=5, save_dir=None, force_retrain=False)
         y_val   = fold_val_df[LABEL_NAME].values.astype(int)
 
         dtrain = xgb.DMatrix(X_train, label=y_train)
-        dval   = xgb.DMatrix(X_val)
+        dval   = xgb.DMatrix(X_val, label=y_val)
 
         params = {
             "objective": "binary:logistic",
@@ -46,7 +47,13 @@ def train_kfold_xgb_baseline(df, n_splits=5, save_dir=None, force_retrain=False)
             "verbosity": 0,
             "seed": SEED,
         }
-        model = xgb.train(params, dtrain, num_boost_round=100)
+        model = xgb.train(
+            params, dtrain,
+            num_boost_round=500,
+            evals=[(dval, "val")],
+            early_stopping_rounds=20,
+            verbose_eval=False,
+        )
 
         if save_dir is not None:
             import os; os.makedirs(save_dir, exist_ok=True)
@@ -91,7 +98,7 @@ def print_results(name, results):
 
 
 if __name__ == "__main__":
-    DATA_FRACTION = 0.02  # e.g. 0.1 to use 10% of data; None to use all
+    DATA_FRACTION = 0.01  # e.g. 0.1 to use 10% of data; None to use all
     MODELS_DIR    = "saved_models"  # directory to save/load results; None to disable
     FORCE_RETRAIN = False           # set True to ignore cached results and retrain
 
@@ -104,9 +111,9 @@ if __name__ == "__main__":
     print(f"Dataset shape after preprocessing: {df.shape}")
     print(f"Positive rate: {df[LABEL_NAME].mean():.4f}")
 
-    DEVICE    = "cpu"
-    N_EPOCHS  = 50
-    BATCH     = 256
+    DEVICE    = "cuda" if torch.cuda.is_available() else "cpu"
+    N_EPOCHS  = 100
+    BATCH     = 512
     LR        = 1e-3
 
     # ── 1. XGBoost baseline ──────────────────────────────────────────────────

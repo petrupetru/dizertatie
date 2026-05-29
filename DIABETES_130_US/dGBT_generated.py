@@ -111,6 +111,7 @@ def distill_dgbdt_fold(
     lamda=1e-3,
     verbose=True,
     save_path=None,
+    patience=5,
 ):
     """Train dGBDT student from teacher soft labels for one CV fold."""
 
@@ -143,6 +144,7 @@ def distill_dgbdt_fold(
         shuffle=True,
         generator=g,
         worker_init_fn=seed_worker,
+        pin_memory=(device != "cpu"),
     )
     val_loader = DataLoader(
         val_ds,
@@ -150,6 +152,7 @@ def distill_dgbdt_fold(
         shuffle=False,
         generator=g,
         worker_init_fn=seed_worker,
+        pin_memory=(device != "cpu"),
     )
 
     dgbdt = dGBDT(
@@ -162,6 +165,10 @@ def distill_dgbdt_fold(
 
     optimizer = optim.Adam(dgbdt.parameters(), lr=lr)
     mse = nn.MSELoss()
+
+    best_val_loss = float("inf")
+    best_state = None
+    no_improve = 0
 
     epoch_losses = []
     for epoch in range(1, num_epochs + 1):
@@ -228,6 +235,20 @@ def distill_dgbdt_fold(
 
         if verbose:
             print(f"dGBDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_state = {k: v.clone() for k, v in dgbdt.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                if verbose:
+                    print(f"  Early stopping at epoch {epoch}")
+                break
+
+    if best_state is not None:
+        dgbdt.load_state_dict(best_state)
 
     dgbdt.eval()
     probs = []
@@ -348,6 +369,7 @@ def train_kfold_tnt_dgbdt(
             shuffle=True,
             generator=g,
             worker_init_fn=seed_worker,
+            pin_memory=(device != "cpu"),
         )
         val_loader = DataLoader(
             val_dataset,
@@ -355,6 +377,7 @@ def train_kfold_tnt_dgbdt(
             shuffle=False,
             generator=g,
             worker_init_fn=seed_worker,
+            pin_memory=(device != "cpu"),
         )
 
         tree_df = xgb_model.trees_to_dataframe()

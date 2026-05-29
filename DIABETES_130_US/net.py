@@ -35,10 +35,14 @@ class DNN(nn.Module):
         return x
 
 
-def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True):
+def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True, patience=5):
     model.to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    best_val_loss = float("inf")
+    best_state = None
+    no_improve = 0
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -72,6 +76,20 @@ def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu",
                 f"Train MSE Loss: {train_loss:.4f}  "
                 f"Val MSE Loss: {val_loss:.4f}"
             )
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                if verbose:
+                    print(f"  Early stopping at epoch {epoch}")
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
 
 def test(model, test_loader, device="cpu", verbose=True):
@@ -148,6 +166,7 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
             shuffle=True,
             generator=g,
             worker_init_fn=seed_worker,
+            pin_memory=(device != "cpu"),
         )
         val_loader = DataLoader(
             val_dataset,
@@ -155,6 +174,7 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
             shuffle=False,
             generator=g,
             worker_init_fn=seed_worker,
+            pin_memory=(device != "cpu"),
         )
 
         model = model_class().to(device)
