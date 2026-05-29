@@ -7,13 +7,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-
 import numpy as np
-if os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None:
-    from tqdm.notebook import tqdm
-else:
-    from tqdm import tqdm
-
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from utils import set_seed, seed_worker, make_run_key, try_load_results, save_results
 from diabetes_dataset import DiabetesDataset
@@ -46,8 +40,7 @@ def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu",
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    epoch_bar = tqdm(range(1, num_epochs + 1), desc="epochs", leave=False)
-    for epoch in epoch_bar:
+    for epoch in range(1, num_epochs + 1):
         model.train()
         train_loss = 0.0
 
@@ -73,7 +66,6 @@ def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu",
         train_loss /= len(train_loader.dataset)
         val_loss /= len(val_loader.dataset)
 
-        epoch_bar.set_postfix(train=f"{train_loss:.4f}", val=f"{val_loss:.4f}")
         if verbose:
             print(
                 f"Epoch [{epoch:3d}/{num_epochs}] "
@@ -124,7 +116,7 @@ def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=
     fold_aurocs = []
     fold_auprcs = []
 
-    for fold, (train_idx, val_idx) in enumerate(tqdm(skf.split(df, labels), total=n_splits, desc="DNN folds"), start=1):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
         if verbose:
             print(f"\n{'='*50}")
             print(f"  Fold {fold}/{n_splits}")

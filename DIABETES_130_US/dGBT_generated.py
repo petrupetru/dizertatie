@@ -7,14 +7,8 @@ import torch.nn.utils.parametrize as parametrize
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-
 import numpy as np
 import xgboost as xgb
-if os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None:
-    from tqdm.notebook import tqdm
-else:
-    from tqdm import tqdm
-
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from SDT import SDT
 from utils import seed_worker, set_seed, make_run_key, try_load_results, save_results
@@ -170,8 +164,7 @@ def distill_dgbdt_fold(
     mse = nn.MSELoss()
 
     epoch_losses = []
-    epoch_bar = tqdm(range(1, num_epochs + 1), desc="dGBDT epochs", leave=False)
-    for epoch in epoch_bar:
+    for epoch in range(1, num_epochs + 1):
         dgbdt.train()
         running_loss = 0.0
 
@@ -233,7 +226,6 @@ def distill_dgbdt_fold(
 
         avg_val_loss = val_running_loss / len(val_loader.dataset)
 
-        epoch_bar.set_postfix(train=f"{avg_train_loss:.4f}", val=f"{avg_val_loss:.4f}")
         if verbose:
             print(f"dGBDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}")
 
@@ -321,7 +313,7 @@ def train_kfold_tnt_dgbdt(
     fold_dgbdt_aurocs = []
     fold_dgbdt_auprcs = []
 
-    for fold, (train_idx, val_idx) in enumerate(tqdm(skf.split(df, labels), total=n_splits, desc="TNT+dGBDT folds"), start=1):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
         if verbose:
             print(f"\n{'='*50}")
             print(f"  Fold {fold}/{n_splits}")

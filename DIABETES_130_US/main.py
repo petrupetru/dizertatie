@@ -2,16 +2,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from sklearn.metrics import roc_auc_score, average_precision_score
-if os.environ.get('KAGGLE_KERNEL_RUN_TYPE') is not None:
-    from tqdm.notebook import tqdm
-else:
-    from tqdm import tqdm
-
 from constants import DATA_FILE, SEED, FEATURE_NAMES, LABEL_NAME
 from diabetes_dataset import preprocess_diabetes
 from utils import make_run_key, try_load_results, save_results
@@ -34,7 +28,7 @@ def train_kfold_xgb_baseline(df, n_splits=5, save_dir=None, force_retrain=False)
     fold_aurocs = []
     fold_auprcs = []
 
-    for fold, (train_idx, val_idx) in enumerate(tqdm(skf.split(df, labels), total=n_splits, desc="XGBoost folds"), start=1):
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
         fold_train_df = df.iloc[train_idx]
         fold_val_df   = df.iloc[val_idx]
 
@@ -128,7 +122,7 @@ if __name__ == "__main__":
         batch_size=BATCH,
         lr=LR,
         device=DEVICE,
-        verbose=False,
+        verbose=True,
         save_dir=MODELS_DIR,
         force_retrain=FORCE_RETRAIN,
     )
@@ -143,7 +137,7 @@ if __name__ == "__main__":
         lr=LR,
         device=DEVICE,
         distilation=True,
-        verbose=False,
+        verbose=True,
         save_dir=MODELS_DIR,
         force_retrain=FORCE_RETRAIN,
     )
@@ -164,7 +158,7 @@ if __name__ == "__main__":
         dgbdt_num_trees=5,
         dgbdt_depth=5,
         dgbdt_lamda=1e-3,
-        verbose=False,
+        verbose=True,
         save_dir=MODELS_DIR,
         force_retrain=FORCE_RETRAIN,
     )
