@@ -1,3 +1,4 @@
+import os
 from sklearn.metrics import average_precision_score, roc_auc_score
 import torch
 import torch.nn as nn
@@ -8,11 +9,12 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 import xgboost as xgb
+from tqdm import tqdm
 
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
 from SDT import SDT
-from utils import seed_worker, set_seed
-from nhanes_datasets import TreeEmbedDataset
+from utils import seed_worker, set_seed, make_run_key, try_load_results, save_results
+from diabetes_dataset import TreeEmbedDataset
 from tree_embeddings import train_xgb
 from TN_net import train, test
 
@@ -27,7 +29,12 @@ class PositiveParam(nn.Module):
 
 
 class dGBDT(nn.Module):
-    """Distillable Gradient Boosted Decision Trees with SDT base learners."""
+    """Distillable Gradient Boosted Decision Trees with SDT base learners.
+
+    This implementation follows the paper's additive ensemble view:
+    F(x) = sum_m beta_m * h_m(x)
+    where h_m is an SDT and beta_m is a tree weight.
+    """
 
     def __init__(
         self,
@@ -58,6 +65,8 @@ class dGBDT(nn.Module):
             ]
         )
 
+        # Initialize to -3 so softplus(-3) ≈ 0.049 per tree — small shrinkage
+        # coefficients consistent with gradient boosting convention (Friedman 2001).
         self.beta = nn.Parameter(torch.full((self.num_trees,), -3.0))
         parametrize.register_parametrization(self, "beta", PositiveParam(eps=1e-6))
 
@@ -103,7 +112,10 @@ def distill_dgbdt_fold(
     depth=5,
     lamda=1e-3,
     verbose=True,
+    save_path=None,
 ):
+    """Train dGBDT student from teacher soft labels for one CV fold."""
+
     if temperature <= 0:
         raise ValueError("temperature must be > 0")
 
@@ -154,7 +166,8 @@ def distill_dgbdt_fold(
     mse = nn.MSELoss()
 
     epoch_losses = []
-    for epoch in range(1, num_epochs + 1):
+    epoch_bar = tqdm(range(1, num_epochs + 1), desc="dGBDT epochs", leave=False)
+    for epoch in epoch_bar:
         dgbdt.train()
         running_loss = 0.0
 
@@ -167,7 +180,6 @@ def distill_dgbdt_fold(
             tree_outputs, penalties, _ = dgbdt(xb, is_training_data=True)
 
             teacher_prob = ytb
-
             pred_so_far = torch.zeros_like(yb)
             total_tree_loss = torch.tensor(0.0, device=device)
             beta = dgbdt.beta
@@ -177,7 +189,6 @@ def distill_dgbdt_fold(
                     alpha * (temperature ** 2) * (teacher_prob - pred_so_far.detach())
                     + (1.0 - alpha) * (yb - pred_so_far.detach())
                 )
-
                 tree_prob = torch.sigmoid(tree_outputs[m])
                 tree_loss = mse(tree_prob, residual) + penalties[m]
                 total_tree_loss = total_tree_loss + tree_loss
@@ -218,6 +229,7 @@ def distill_dgbdt_fold(
 
         avg_val_loss = val_running_loss / len(val_loader.dataset)
 
+        epoch_bar.set_postfix(train=f"{avg_train_loss:.4f}", val=f"{avg_val_loss:.4f}")
         if verbose:
             print(f"dGBDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}")
 
@@ -245,6 +257,9 @@ def distill_dgbdt_fold(
     if verbose:
         print(f"dGBDT AUROC: {auroc:.4f}  AUPRC: {auprc:.4f}")
 
+    if save_path is not None:
+        torch.save(dgbdt.state_dict(), save_path)
+
     return {
         "model": dgbdt,
         "auroc": auroc,
@@ -270,8 +285,29 @@ def train_kfold_tnt_dgbdt(
     dgbdt_depth=5,
     dgbdt_lamda=1e-3,
     verbose=True,
+    save_dir=None,
+    force_retrain=False,
 ):
     """Run TNT with TN-DNN teacher and dGBDT student under k-fold CV."""
+    key = make_run_key(
+        model="tnt_dgbdt",
+        splits=n_splits,
+        epochs=num_epochs,
+        epochs_dgbdt=num_epochs_dgbdt,
+        lr=lr,
+        lr_dgbdt=lr_dgbdt,
+        batch=batch_size,
+        alpha=alpha,
+        temp=temperature,
+        trees=dgbdt_num_trees,
+        depth=dgbdt_depth,
+    )
+    if not force_retrain:
+        cached = try_load_results(save_dir, key)
+        if cached is not None:
+            print(f"[TNT+dGBDT] Loaded cached results ({key})")
+            return cached
+
     set_seed(SEED)
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
     labels = df[LABEL_NAME].values
@@ -281,30 +317,30 @@ def train_kfold_tnt_dgbdt(
     fold_dgbdt_aurocs = []
     fold_dgbdt_auprcs = []
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
+    for fold, (train_idx, val_idx) in enumerate(tqdm(skf.split(df, labels), total=n_splits, desc="TNT+dGBDT folds"), start=1):
         if verbose:
             print(f"\n{'='*50}")
             print(f"  Fold {fold}/{n_splits}")
             print(f"{'='*50}")
 
         fold_train_df = df.iloc[train_idx].copy()
-        fold_val_df = df.iloc[val_idx].copy()
+        fold_val_df   = df.iloc[val_idx].copy()
 
         scaler = StandardScaler()
         fold_train_df[FEATURE_NAMES] = scaler.fit_transform(fold_train_df[FEATURE_NAMES])
-        fold_val_df[FEATURE_NAMES] = scaler.transform(fold_val_df[FEATURE_NAMES])
+        fold_val_df[FEATURE_NAMES]   = scaler.transform(fold_val_df[FEATURE_NAMES])
 
         xgb_model, num_trees = train_xgb(fold_train_df)
         dtrain = xgb.DMatrix(fold_train_df[FEATURE_NAMES].values)
-        dval = xgb.DMatrix(fold_val_df[FEATURE_NAMES].values)
+        dval   = xgb.DMatrix(fold_val_df[FEATURE_NAMES].values)
 
         leaf_indices_train = xgb_model.predict(dtrain, pred_leaf=True)
-        leaf_indices_val = xgb_model.predict(dval, pred_leaf=True)
+        leaf_indices_val   = xgb_model.predict(dval, pred_leaf=True)
         labels_train = fold_train_df[LABEL_NAME].values.astype(int)
-        labels_val = fold_val_df[LABEL_NAME].values.astype(int)
+        labels_val   = fold_val_df[LABEL_NAME].values.astype(int)
 
         train_dataset = TreeEmbedDataset(leaf_indices_train, labels_train)
-        val_dataset = TreeEmbedDataset(leaf_indices_val, labels_val)
+        val_dataset   = TreeEmbedDataset(leaf_indices_val, labels_val)
 
         fold_seed = SEED + fold
         g = torch.Generator()
@@ -348,11 +384,16 @@ def train_kfold_tnt_dgbdt(
             verbose=verbose,
         )
 
+        if save_dir is not None:
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save(teacher_model.state_dict(), os.path.join(save_dir, f"{key}__fold{fold}_teacher.pt"))
+
         teacher_metrics = test(teacher_model, val_loader, device=device, verbose=verbose)
         fold_teacher_aurocs.append(teacher_metrics["auroc"])
         fold_teacher_auprcs.append(teacher_metrics["auprc"])
 
         dgbdt_seed = SEED + 1000 + fold
+        dgbdt_save_path = os.path.join(save_dir, f"{key}__fold{fold}_dgbdt.pt") if save_dir is not None else None
         dgbdt_metrics = distill_dgbdt_fold(
             teacher_model=teacher_model,
             leaf_indices_train=leaf_indices_train,
@@ -372,27 +413,32 @@ def train_kfold_tnt_dgbdt(
             depth=dgbdt_depth,
             lamda=dgbdt_lamda,
             verbose=verbose,
+            save_path=dgbdt_save_path,
         )
         fold_dgbdt_aurocs.append(dgbdt_metrics["auroc"])
         fold_dgbdt_auprcs.append(dgbdt_metrics["auprc"])
 
         if verbose:
-            print(f"Fold {fold} - Teacher AUROC: {teacher_metrics['auroc']:.4f} AUPRC: {teacher_metrics['auprc']:.4f}")
-            print(f"Fold {fold} - dGBDT  AUROC: {dgbdt_metrics['auroc']:.4f} AUPRC: {dgbdt_metrics['auprc']:.4f}")
+            print(
+                f"Fold {fold} - Teacher AUROC: {teacher_metrics['auroc']:.4f} AUPRC: {teacher_metrics['auprc']:.4f}"
+            )
+            print(
+                f"Fold {fold} - dGBDT  AUROC: {dgbdt_metrics['auroc']:.4f} AUPRC: {dgbdt_metrics['auprc']:.4f}"
+            )
 
     results = {
         "fold_teacher_aurocs": fold_teacher_aurocs,
         "fold_teacher_auprcs": fold_teacher_auprcs,
         "mean_teacher_auroc": float(np.mean(fold_teacher_aurocs)),
-        "std_teacher_auroc": float(np.std(fold_teacher_aurocs)),
+        "std_teacher_auroc":  float(np.std(fold_teacher_aurocs)),
         "mean_teacher_auprc": float(np.mean(fold_teacher_auprcs)),
-        "std_teacher_auprc": float(np.std(fold_teacher_auprcs)),
+        "std_teacher_auprc":  float(np.std(fold_teacher_auprcs)),
         "fold_dgbdt_aurocs": fold_dgbdt_aurocs,
         "fold_dgbdt_auprcs": fold_dgbdt_auprcs,
         "mean_dgbdt_auroc": float(np.mean(fold_dgbdt_aurocs)),
-        "std_dgbdt_auroc": float(np.std(fold_dgbdt_aurocs)),
+        "std_dgbdt_auroc":  float(np.std(fold_dgbdt_aurocs)),
         "mean_dgbdt_auprc": float(np.mean(fold_dgbdt_auprcs)),
-        "std_dgbdt_auprc": float(np.std(fold_dgbdt_auprcs)),
+        "std_dgbdt_auprc":  float(np.std(fold_dgbdt_auprcs)),
     }
 
     if verbose:
@@ -402,5 +448,8 @@ def train_kfold_tnt_dgbdt(
         print(f"dGBDT  AUROC: {results['mean_dgbdt_auroc']:.4f} +/- {results['std_dgbdt_auroc']:.4f}")
         print(f"dGBDT  AUPRC: {results['mean_dgbdt_auprc']:.4f} +/- {results['std_dgbdt_auprc']:.4f}")
         print(f"{'='*50}")
+
+    if save_dir is not None:
+        save_results(save_dir, key, results)
 
     return results

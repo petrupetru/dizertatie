@@ -83,8 +83,6 @@ class SDT(nn.Module):
         _mu, _penalty = self._forward(X)
         y_pred = self.leaf_nodes(_mu)
 
-        # When `X` is the training data, the model also returns the penalty
-        # to compute the training loss.
         if is_training_data:
             return y_pred, _penalty
         else:
@@ -103,20 +101,16 @@ class SDT(nn.Module):
         _mu = X.data.new(batch_size, 1, 1).fill_(1.0)
         _penalty = torch.tensor(0.0).to(self.device)
 
-        # Iterate through internal nodes in each layer to compute the final path
-        # probabilities and the regularization term.
         begin_idx = 0
         end_idx = 1
 
         for layer_idx in range(0, self.depth):
           _path_prob = path_prob[:, begin_idx:end_idx, :]
 
-          # Extract internal nodes in the current layer to compute the
-          # regularization term
           _penalty = _penalty + self._cal_penalty(layer_idx, _mu, _path_prob)
           _mu = _mu.view(batch_size, -1, 1).repeat(1, 1, 2)
 
-          _mu = _mu * _path_prob  # update path probabilities
+          _mu = _mu * _path_prob
 
           begin_idx = end_idx
           end_idx = begin_idx + 2 ** (layer_idx + 1)
@@ -143,7 +137,6 @@ class SDT(nn.Module):
             denominator = torch.sum(_mu[:, node // 2], dim=0)
             denominator = torch.clamp(denominator, min=eps)
             alpha = numerator / denominator
-            # Avoid log(0) and keep alpha in a stable range.
             alpha = torch.clamp(alpha, min=eps, max=1.0 - eps)
 
             coeff = self.penalty_list[layer_idx]
@@ -157,14 +150,8 @@ class SDT(nn.Module):
         batch_size = X.size()[0]
         X = X.view(batch_size, -1)
 
-        ## 1. Create a binary mask of the missing values (1 if NaN, 0 otherwise)
         missing_mask = torch.isnan(X).float()
-
-        # 2. Replace NaNs with 0.0 so the network can safely multiply them
         X_zero_filled = torch.nan_to_num(X, nan=0.0)
-
-        # 3. Concatenate the features and the mask
-        # Shape becomes (batch_size, input_dim * 2)
         X_combined = torch.cat((X_zero_filled, missing_mask), dim=1)
 
         bias = torch.ones(batch_size, 1).to(self.device)

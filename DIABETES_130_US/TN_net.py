@@ -1,19 +1,21 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 import xgboost as xgb
+from tqdm import tqdm
 
 from constants import SEED, FEATURE_NAMES, LABEL_NAME
-from utils import set_seed, seed_worker, _assert_finite_tensor
+from utils import set_seed, seed_worker, _assert_finite_tensor, make_run_key, try_load_results, save_results
 from SDT import SDT
 from tree_embeddings import train_xgb
-from nhanes_datasets import TreeEmbedDataset
+from diabetes_dataset import TreeEmbedDataset
 
 
 class TN_DNN(nn.Module):
@@ -85,10 +87,11 @@ class TN_DNN(nn.Module):
 
 def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu", verbose=True):
     model.to(device)
-    criterion = nn.BCELoss()
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    for epoch in range(1, num_epochs + 1):
+    epoch_bar = tqdm(range(1, num_epochs + 1), desc="epochs", leave=False)
+    for epoch in epoch_bar:
         model.train()
         train_loss = 0.0
 
@@ -114,11 +117,12 @@ def train(model, train_loader, val_loader, num_epochs=50, lr=1e-3, device="cpu",
         train_loss /= len(train_loader.dataset)
         val_loss /= len(val_loader.dataset)
 
+        epoch_bar.set_postfix(train=f"{train_loss:.4f}", val=f"{val_loss:.4f}")
         if verbose:
             print(
                 f"Epoch [{epoch:3d}/{num_epochs}] "
-                f"Train BCE Loss: {train_loss:.4f}  "
-                f"Val BCE Loss: {val_loss:.4f}"
+                f"Train MSE Loss: {train_loss:.4f}  "
+                f"Val MSE Loss: {val_loss:.4f}"
             )
 
 
@@ -166,6 +170,7 @@ def distill_sdt_fold(
     lamda=1e-3,
     seed=None,
     verbose=True,
+    save_path=None,
 ):
     teacher_model.eval()
     with torch.no_grad():
@@ -174,8 +179,12 @@ def distill_sdt_fold(
         y_teacher_train = teacher_model(X_teacher_train).cpu()
         y_teacher_val = teacher_model(X_teacher_val).cpu()
 
-    X_train_raw = torch.tensor(fold_train_df[FEATURE_NAMES].values, dtype=torch.float32)
-    X_val_raw = torch.tensor(fold_val_df[FEATURE_NAMES].values, dtype=torch.float32)
+    X_train_raw = torch.tensor(
+        fold_train_df[FEATURE_NAMES].values, dtype=torch.float32
+    )
+    X_val_raw = torch.tensor(
+        fold_val_df[FEATURE_NAMES].values, dtype=torch.float32
+    )
 
     y_train_true = torch.tensor(labels_train, dtype=torch.float32).unsqueeze(1)
     y_val_true = torch.tensor(labels_val, dtype=torch.float32).unsqueeze(1)
@@ -214,7 +223,8 @@ def distill_sdt_fold(
     sdt_opt = optim.Adam(sdt.parameters(), lr=lr)
     mse = nn.MSELoss()
 
-    for epoch in range(1, num_epochs + 1):
+    epoch_bar = tqdm(range(1, num_epochs + 1), desc="SDT epochs", leave=False)
+    for epoch in epoch_bar:
         sdt.train()
         train_running_loss = 0.0
         for xb, yb, ytb in sdt_train_loader:
@@ -252,6 +262,7 @@ def distill_sdt_fold(
 
         avg_val_loss = val_running_loss / len(sdt_val_loader.dataset)
 
+        epoch_bar.set_postfix(train=f"{avg_train_loss:.4f}", val=f"{avg_val_loss:.4f}")
         if verbose:
             print(f"SDT Epoch [{epoch:3d}/{num_epochs}] Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}")
 
@@ -279,101 +290,20 @@ def distill_sdt_fold(
     if verbose:
         print(f"SDT AUROC: {sdt_auroc:.4f}  AUPRC: {sdt_auprc:.4f}")
 
+    if save_path is not None:
+        torch.save(sdt.state_dict(), save_path)
+
     return {"auroc": sdt_auroc, "auprc": sdt_auprc}
 
 
-def train_kfold(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=32, device="cpu", verbose=True):
-    set_seed(SEED)
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
-    labels = df[LABEL_NAME].values
+def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=32, device="cpu", verbose=True, distilation=False, save_dir=None, force_retrain=False):
+    key = make_run_key(model="tnt_sdt", splits=n_splits, epochs=num_epochs, lr=lr, batch=batch_size, distil=int(distilation))
+    if not force_retrain:
+        cached = try_load_results(save_dir, key)
+        if cached is not None:
+            print(f"[TNT+SDT] Loaded cached results ({key})")
+            return cached
 
-    fold_aurocs = []
-    fold_auprcs = []
-
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
-        if verbose:
-            print(f"\n{'='*50}")
-            print(f"  Fold {fold}/{n_splits}")
-            print(f"{'='*50}")
-
-        fold_train_df = df.iloc[train_idx].copy()
-        fold_val_df   = df.iloc[val_idx].copy()
-
-        xgb_model, num_trees = train_xgb(fold_train_df)
-        X = fold_train_df[FEATURE_NAMES].values
-        dtrain = xgb.DMatrix(X)
-        leaf_indices_train = xgb_model.predict(dtrain, pred_leaf=True)
-        labels_train = fold_train_df[LABEL_NAME].values.astype(int)
-        dval = xgb.DMatrix(fold_val_df[FEATURE_NAMES].values)
-        leaf_indices_val = xgb_model.predict(dval, pred_leaf=True)
-        labels_val = fold_val_df[LABEL_NAME].values.astype(int)
-
-        train_dataset = TreeEmbedDataset(leaf_indices_train, labels_train)
-        val_dataset   = TreeEmbedDataset(leaf_indices_val, labels_val)
-
-        fold_seed = SEED + fold
-        g = torch.Generator()
-        g.manual_seed(fold_seed)
-
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            generator=g,
-            worker_init_fn=seed_worker,
-        )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            generator=g,
-            worker_init_fn=seed_worker,
-        )
-
-        tree_df = xgb_model.trees_to_dataframe()
-        leaf_nodes = tree_df[tree_df["Feature"] == "Leaf"]
-        max_leaf_index = int(leaf_nodes["Node"].max()) if not leaf_nodes.empty else 0
-        num_groups = 10
-        max_leaves_per_tree = max(1, max_leaf_index + 1)
-
-        model = model_class(
-            num_trees=num_trees,
-            num_groups=num_groups,
-            max_leaves_per_tree=max_leaves_per_tree,
-            embedding_dim=8,
-        ).to(device)
-        train(model, train_loader, val_loader, num_epochs=num_epochs, lr=lr, device=device, verbose=verbose)
-
-        metrics = test(model, val_loader, device=device, verbose=verbose)
-        fold_aurocs.append(metrics["auroc"])
-        fold_auprcs.append(metrics["auprc"])
-
-        if verbose:
-            print(f"Fold {fold} — AUROC: {metrics['auroc']:.4f}  AUPRC: {metrics['auprc']:.4f}")
-
-    mean_auroc = np.mean(fold_aurocs)
-    std_auroc  = np.std(fold_aurocs)
-    mean_auprc = np.mean(fold_auprcs)
-    std_auprc  = np.std(fold_auprcs)
-
-    if verbose:
-        print(f"\n{'='*50}")
-        print(f"  Cross-Validation Results ({n_splits} folds)")
-        print(f"  AUROC: {mean_auroc:.4f} ± {std_auroc:.4f}")
-        print(f"  AUPRC: {mean_auprc:.4f} ± {std_auprc:.4f}")
-        print(f"{'='*50}")
-
-    return {
-        "fold_aurocs": fold_aurocs,
-        "fold_auprcs": fold_auprcs,
-        "mean_auroc": mean_auroc,
-        "std_auroc":  std_auroc,
-        "mean_auprc": mean_auprc,
-        "std_auprc":  std_auprc,
-    }
-
-
-def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_size=32, device="cpu", verbose=True, distilation=False):
     set_seed(SEED)
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
     labels = df[LABEL_NAME].values
@@ -383,7 +313,7 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
     fold_sdt_aurocs = []
     fold_sdt_auprcs = []
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
+    for fold, (train_idx, val_idx) in enumerate(tqdm(skf.split(df, labels), total=n_splits, desc="TNT+SDT folds"), start=1):
         if verbose:
             print(f"\n{'='*50}")
             print(f"  Fold {fold}/{n_splits}")
@@ -440,6 +370,10 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
         ).to(device)
         train(model, train_loader, val_loader, num_epochs=num_epochs, lr=lr, device=device, verbose=verbose)
 
+        if save_dir is not None:
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(save_dir, f"{key}__fold{fold}_teacher.pt"))
+
         metrics = test(model, val_loader, device=device, verbose=verbose)
         fold_aurocs.append(metrics["auroc"])
         fold_auprcs.append(metrics["auprc"])
@@ -449,6 +383,7 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
 
         if distilation:
             sdt_seed = SEED + 1000 + fold
+            sdt_save_path = os.path.join(save_dir, f"{key}__fold{fold}_sdt.pt") if save_dir is not None else None
             sdt_metrics = distill_sdt_fold(
                 teacher_model=model,
                 leaf_indices_train=leaf_indices_train,
@@ -466,6 +401,7 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
                 lamda=1e-3,
                 seed=sdt_seed,
                 verbose=verbose,
+                save_path=sdt_save_path,
             )
             fold_sdt_aurocs.append(sdt_metrics["auroc"])
             fold_sdt_auprcs.append(sdt_metrics["auprc"])
@@ -498,5 +434,8 @@ def train_kfold_TNT(df, model_class, n_splits=5, num_epochs=50, lr=1e-3, batch_s
         cv_results["std_soft_tree_auroc"]  = float(np.std(fold_sdt_aurocs))
         cv_results["mean_soft_tree_auprc"] = float(np.mean(fold_sdt_auprcs))
         cv_results["std_soft_tree_auprc"]  = float(np.std(fold_sdt_auprcs))
+
+    if save_dir is not None:
+        save_results(save_dir, key, cv_results)
 
     return cv_results
