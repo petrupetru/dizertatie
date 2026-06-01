@@ -3,7 +3,8 @@ import numpy as np
 import xgboost as xgb
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers, optimizers, Model
-from tensorflow.keras.layers import Input, Activation, BatchNormalization, Flatten, Conv2D, AveragePooling2D, Dropout, Reshape
+from tensorflow.keras.layers import (Input, Activation, BatchNormalization, Flatten, 
+                                     Conv2D, AveragePooling2D, Dropout, Reshape, Dense)
 from tensorflow.keras.callbacks import ModelCheckpoint
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
@@ -15,7 +16,8 @@ from main import cross_validation_plot_roc, plot_confusion
 def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=8, l2_penalty=0.0):
     """
     Hybrid TNT-ConvNet architecture.
-    Input is leaf indices for 48 hours.
+    Input: Leaf indices for 48 hours.
+    Neural Component: ISeeU ConvNet architecture.
     """
     total_features = num_trees * embedding_dim
     # Input shape: (48 hours, num_trees)
@@ -32,8 +34,7 @@ def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=8, l2_penal
     # 2. Reshape for Conv2D: (height=48, width=total_features, channels=1)
     X = Reshape((48, total_features, 1))(tree_embeddings)
 
-    # 3. Parallel Temporal Convolution branches (same as ISeeU)
-    # Convolving over the 48 hour axis
+    # 3. Parallel Temporal Convolution branches (Short, Medium, Long term)
     short_term_conv  = Conv2D(16, (3,1),  strides=(1,1), padding='same', name='3h_conv')(X)
     medium_term_conv = Conv2D(16, (6,1),  strides=(1,1), padding='same', name='6h_conv')(X)
     long_term_conv   = Conv2D(16, (12,1), strides=(1,1), padding='same', name='12h_conv')(X)
@@ -42,7 +43,7 @@ def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=8, l2_penal
     medium_term_conv = Activation('relu')(medium_term_conv)
     long_term_conv   = Activation('relu')(long_term_conv)
 
-    # Pooling over the 'feature' dimension
+    # Average pooling across the feature width
     short_term_conv  = AveragePooling2D(pool_size=(1, 5), padding='same', name='3h_pooled')(short_term_conv)
     medium_term_conv = AveragePooling2D(pool_size=(1, 5), padding='same', name='6h_pooled')(medium_term_conv)
     long_term_conv   = AveragePooling2D(pool_size=(1, 5), padding='same', name='12h_pooled')(long_term_conv)
@@ -51,20 +52,21 @@ def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=8, l2_penal
     X = Dropout(0.45, name='dropout1')(X)
     X = BatchNormalization(axis=3, name='bn1')(X)
 
+    # 4. Dense Head
     X = Flatten()(X)
     X = Dense(256, activation='relu', name='fc1', kernel_regularizer=regularizers.l2(l2_penalty))(X)
     X = Dropout(0.45, name='dropout3')(X)
     X = BatchNormalization(axis=1, name='bn3')(X)
 
-    # Output
+    # Final Binary Classification
     output = Dense(1, activation='sigmoid', name='fc2')(X)
 
     return Model(inputs=leaf_input, outputs=output, name='tnt_icu_convnet')
 
 def train_xgb_teacher(X_raw, y):
-    """Trains an XGBoost model on hourly snapshots."""
+    """Trains an XGBoost teacher on clinical snapshots (one row per patient-hour)."""
     N, P, H = X_raw.shape
-    # Flatten patients and hours to train GBDT on individual feature sets
+    # Reshape to (Samples * Hours, Features) for XGBoost training
     X_flat = X_raw.transpose(0, 2, 1).reshape(-1, P)
     y_flat = np.repeat(y, H)
     
@@ -79,11 +81,11 @@ def train_xgb_teacher(X_raw, y):
     return bst
 
 def get_leaf_indices(bst, X_raw):
-    """Extracts leaf indices for each patient and each hour."""
+    """Passes raw features through XGBoost to get temporal leaf indices."""
     N, P, H = X_raw.shape
     X_flat = X_raw.transpose(0, 2, 1).reshape(-1, P)
     ddata = xgb.DMatrix(X_flat)
-    leaf_indices = bst.predict(ddata, pred_leaf=True) # (N*H, num_trees)
+    leaf_indices = bst.predict(ddata, pred_leaf=True) 
     return leaf_indices.reshape(N, H, -1)
 
 def run_cv():
@@ -103,40 +105,39 @@ def run_cv():
     for i, (train_idx, val_idx) in enumerate(cv_idx):
         print(f"\n--- Fold {i} ---")
         
-        # 1. Standardize (on raw features)
+        # Normalize features
         X_train_raw = X_raw[train_idx]
         X_val_raw   = X_raw[val_idx]
-        
-        # Simplistic mean/std per predictor
         m = np.nanmean(X_train_raw, axis=(0, 2), keepdims=True)
         s = np.nanstd(X_train_raw, axis=(0, 2), keepdims=True)
         X_tr_norm = np.nan_to_num((X_train_raw - m) / (s + 1e-8))
         X_vl_norm = np.nan_to_num((X_val_raw - m) / (s + 1e-8))
 
-        # 2. Train XGBoost Teacher
+        # 1. XGBoost Feature Engineering
         print("Training XGBoost teacher...")
         bst = train_xgb_teacher(X_tr_norm, y[train_idx])
         
-        # 3. Generate Leaf Indices (Temporal)
+        # 2. Extract Leaf Sequences
         print("Generating leaf indices...")
-        L_tr = get_leaf_indices(bst, X_tr_norm) # (N_tr, 48, num_trees)
-        L_vl = get_leaf_indices(bst, X_vl_norm) # (N_vl, 48, num_trees)
+        L_tr = get_leaf_indices(bst, X_tr_norm) 
+        L_vl = get_leaf_indices(bst, X_vl_norm) 
         
         num_trees = L_tr.shape[2]
-        # Extract metadata for TNT layer
         tree_df = bst.trees_to_dataframe()
-        max_leaf = int(tree_df[tree_df['Feature'] == 'Leaf']['Node'].max()) + 1
+        max_leaf = int(tree_df['Node'].max()) + 1
 
-        # 4. Create and Train TNT-ConvNet
+        # 3. Model Training
         model = create_tnt_convnet(
             num_trees=num_trees, 
-            max_leaves_per_tree=max_leaf
+            max_leaves_per_tree=max_leaf,
+            embedding_dim=8
         )
         
         sgd = optimizers.SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=True)
         model.compile(optimizer=sgd, loss='binary_crossentropy', metrics=['accuracy'])
 
-        ckpt = ModelCheckpoint(f'plots_tnt/fold{i}_best.keras', monitor='val_loss', save_best_only=True)
+        ckpt_path = f'plots_tnt/fold{i}_best.keras'
+        ckpt = ModelCheckpoint(ckpt_path, monitor='val_loss', save_best_only=True)
         
         model.fit(
             L_tr, y[train_idx], 
@@ -148,14 +149,14 @@ def run_cv():
             verbose=1
         )
 
-        model.load_weights(f'plots_tnt/fold{i}_best.keras')
+        model.load_weights(ckpt_path)
         predictions.append(model.predict(L_vl))
         ground_truth.append(y[val_idx])
 
-    # 5. Evaluate
+    # 4. Global Evaluation
     cross_validation_plot_roc(
         ground_truth, predictions, 
-        'TNT-ConvNet MIMIC-III ROC', 
+        'TNT-ConvNet MIMIC-III Mortality Prediction ROC', 
         filename='plots_tnt/roc_tnt.png'
     )
     plot_confusion(ground_truth, predictions, filename='plots_tnt/cm_tnt.png')

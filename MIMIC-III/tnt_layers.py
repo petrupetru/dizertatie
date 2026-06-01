@@ -12,6 +12,7 @@ class TreeEmbeddingLayer(layers.Layer):
         self.num_trees = num_trees
         self.max_leaves_per_tree = max_leaves_per_tree
         self.embedding_dim = embedding_dim
+        # Vocabulary covers all possible leaf IDs across all trees using offsets
         self.total_vocabulary = num_trees * max_leaves_per_tree
 
         # Tree permutation (fixed)
@@ -23,7 +24,7 @@ class TreeEmbeddingLayer(layers.Layer):
         self.tree_offsets = tf.constant(self.tree_offsets, dtype=tf.int32)
 
     def build(self, input_shape):
-        # Single embedding table for all trees (using offsets)
+        # Single embedding table for all trees
         self.embedding = layers.Embedding(
             self.total_vocabulary, 
             self.embedding_dim, 
@@ -33,7 +34,7 @@ class TreeEmbeddingLayer(layers.Layer):
 
     def call(self, inputs):
         # inputs shape: (batch_size, 48, num_trees)
-        # Permute trees
+        # Permute trees for stochasticity (consistent with TNT paper)
         x = tf.gather(inputs, self.tree_perm, axis=-1)
         
         # Apply offsets: (batch, 48, num_trees)
