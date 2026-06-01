@@ -205,10 +205,10 @@ def distill_dgbdt_fold(
                 )
 
                 # Convert SDT logit output to probability space to match s^i accumulation
-                tree_prob = torch.sigmoid(tree_outputs[m])
-                tree_loss = mse(tree_prob, residual) + penalties[m]
+                weighted_prob = beta[m] * torch.sigmoid(tree_outputs[m])
+                tree_loss = mse(weighted_prob, residual) + penalties[m]
                 total_tree_loss = total_tree_loss + tree_loss
-                pred_so_far = pred_so_far + beta[m] * tree_prob  # accumulate in prob space
+                pred_so_far = pred_so_far + weighted_prob  # accumulate in prob space
 
             total_tree_loss.backward()
             optimizer.step()
@@ -237,9 +237,9 @@ def distill_dgbdt_fold(
                         alpha * (temperature ** 2) * (teacher_prob_v - pred_so_far_v)
                         + (1.0 - alpha) * (yb - pred_so_far_v)
                     )
-                    tree_prob_v = torch.sigmoid(tree_outputs_v[m])
-                    val_loss = val_loss + mse(tree_prob_v, residual_v) + penalties_v[m]
-                    pred_so_far_v = pred_so_far_v + beta_v[m] * tree_prob_v
+                    weighted_prob_v = beta_v[m] * torch.sigmoid(tree_outputs_v[m])
+                    val_loss = val_loss + mse(weighted_prob_v, residual_v) + penalties_v[m]
+                    pred_so_far_v = pred_so_far_v + weighted_prob_v
 
                 val_running_loss += val_loss.item() * xb.size(0)
         dgbdt.train()
