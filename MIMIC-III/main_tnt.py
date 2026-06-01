@@ -4,8 +4,8 @@ import xgboost as xgb
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers, optimizers, Model
 from tensorflow.keras.layers import (Input, Activation, BatchNormalization, Flatten, 
-                                     Conv2D, AveragePooling2D, Dropout, Reshape, Dense, SpatialDropout2D)
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, LearningRateScheduler
+                                     Conv2D, AveragePooling2D, Dropout, Reshape, Dense)
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
 
@@ -49,12 +49,12 @@ def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=4, l2_penal
     long_term_conv   = AveragePooling2D(pool_size=(1, 5), padding='same', name='12h_pooled')(long_term_conv)
 
     X = layers.concatenate([short_term_conv, medium_term_conv, long_term_conv], axis=3)
-    X = SpatialDropout2D(0.5, name='spatial_dropout')(X)
+    X = Dropout(0.45, name='dropout1')(X)
     X = BatchNormalization(axis=3, name='bn1')(X)
 
     # 4. Dense Head
     X = Flatten()(X)
-    X = Dense(64, activation='relu', name='fc1', kernel_regularizer=regularizers.l2(l2_penalty))(X)
+    X = Dense(128, activation='relu', name='fc1', kernel_regularizer=regularizers.l2(l2_penalty))(X)
     X = Dropout(0.45, name='dropout3')(X)
     X = BatchNormalization(axis=1, name='bn3')(X)
 
@@ -110,13 +110,18 @@ def run_cv():
         X_val_raw   = X_raw[val_idx]
         m = np.nanmean(X_train_raw, axis=(0, 2), keepdims=True)
         s = np.nanstd(X_train_raw, axis=(0, 2), keepdims=True)
+
+        # Save normalization parameters for later inference/distillation
+        np.save(f'plots_tnt/fold{i}_mean.npy', m)
+        np.save(f'plots_tnt/fold{i}_std.npy', s)
+
         X_tr_norm = np.nan_to_num((X_train_raw - m) / (s + 1e-8))
         X_vl_norm = np.nan_to_num((X_val_raw - m) / (s + 1e-8))
 
         # 1. XGBoost Feature Engineering
         print("Training XGBoost teacher...")
         bst = train_xgb_teacher(X_tr_norm, y[train_idx])
-        bst.save_model(f'plots_tnt/xgb_teacher_fold{i}.json')
+        bst.save_model(f'plots_tnt/fold{i}_xgb_teacher.json')
         
         # 2. Extract Leaf Sequences
         print("Generating leaf indices...")
@@ -146,13 +151,7 @@ def run_cv():
 
         ckpt_path = f'plots_tnt/fold{i}_best.keras'
         ckpt = ModelCheckpoint(ckpt_path, monitor='val_loss', save_best_only=True)
-        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-        
-        def lr_schedule(epoch):
-            if epoch < 10: return 0.01
-            if epoch < 25: return 0.005
-            return 0.001
-        lr_decay = LearningRateScheduler(lr_schedule)
+        early_stop = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
         
         model.fit(
             L_tr, y[train_idx], 
@@ -160,7 +159,7 @@ def run_cv():
             batch_size=32,
             class_weight={0: 1, 1: 10},
             validation_data=(L_vl, y[val_idx]),
-            callbacks=[ckpt, early_stop, lr_decay],
+            callbacks=[ckpt, early_stop],
             verbose=1
         )
 
