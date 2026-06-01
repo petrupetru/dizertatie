@@ -65,7 +65,7 @@ class SDT(nn.Module):
 
         # Different penalty coefficients for nodes in different layers
         self.penalty_list = [
-            self.lamda * (2 ** (-depth)) for depth in range(0, self.depth)
+            self.lamda * (2 ** (-d)) for d in range(0, self.depth)
         ]
 
         # Initialize internal nodes and leaf nodes, the input dimension on
@@ -100,8 +100,8 @@ class SDT(nn.Module):
         path_prob = torch.unsqueeze(path_prob, dim=2)
         path_prob = torch.cat((path_prob, 1 - path_prob), dim=2)
 
-        _mu = X.data.new(batch_size, 1, 1).fill_(1.0)
-        _penalty = torch.tensor(0.0).to(self.device)
+        _mu = torch.ones(batch_size, 1, 1, device=self.device)
+        _penalty = torch.tensor(0.0, device=self.device)
 
         # Iterate through internal nodes in each layer to compute the final path
         # probabilities and the regularization term.
@@ -132,25 +132,16 @@ class SDT(nn.Module):
         penalty = torch.tensor(0.0).to(self.device)
         eps = 1e-6
 
-        batch_size = _mu.size()[0]
+        batch_size = _mu.size(0)
         _mu = _mu.view(batch_size, 2 ** layer_idx)
-        _path_prob = _path_prob.view(batch_size, 2 ** (layer_idx + 1))
+        _path_prob_left = _path_prob.view(batch_size, -1)[:, 0::2]
 
-        for node in range(0, 2 ** (layer_idx + 1)):
-            numerator = torch.sum(
-              _path_prob[:, node] * _mu[:, node // 2], dim=0
-            )
-            denominator = torch.sum(_mu[:, node // 2], dim=0)
-            denominator = torch.clamp(denominator, min=eps)
-            alpha = numerator / denominator
-            # Avoid log(0) and keep alpha in a stable range.
-            alpha = torch.clamp(alpha, min=eps, max=1.0 - eps)
+        numerator = (_path_prob_left * _mu).sum(dim=0)
+        denominator = _mu.sum(dim=0).clamp(min=eps)
+        alpha = (numerator / denominator).clamp(min=eps, max=1.0 - eps)
 
-            coeff = self.penalty_list[layer_idx]
-
-            penalty -= 0.5 * coeff * (torch.log(alpha) + torch.log(1 - alpha))
-
-        return penalty
+        coeff = self.penalty_list[layer_idx]
+        return -0.5 * coeff * (torch.log(alpha) + torch.log(1 - alpha)).sum()
 
     def _data_augment(self, X):
         """Add a constant input `1` onto the front of each sample."""
