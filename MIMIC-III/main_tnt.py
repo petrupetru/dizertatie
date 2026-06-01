@@ -4,8 +4,8 @@ import xgboost as xgb
 import tensorflow as tf
 from tensorflow.keras import layers, regularizers, optimizers, Model
 from tensorflow.keras.layers import (Input, Activation, BatchNormalization, Flatten, 
-                                     Conv2D, AveragePooling2D, Dropout, Reshape, Dense)
-from tensorflow.keras.callbacks import ModelCheckpoint
+                                     Conv2D, AveragePooling2D, Dropout, Reshape, Dense, SpatialDropout2D)
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, LearningRateScheduler
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
 
@@ -13,7 +13,7 @@ from preprocess import build_dataset
 from tnt_layers import TreeEmbeddingLayer
 from main import cross_validation_plot_roc, plot_confusion
 
-def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=8, l2_penalty=0.0):
+def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=4, l2_penalty=0.01):
     """
     Hybrid TNT-ConvNet architecture.
     Input: Leaf indices for 48 hours.
@@ -49,17 +49,17 @@ def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=8, l2_penal
     long_term_conv   = AveragePooling2D(pool_size=(1, 5), padding='same', name='12h_pooled')(long_term_conv)
 
     X = layers.concatenate([short_term_conv, medium_term_conv, long_term_conv], axis=3)
-    X = Dropout(0.45, name='dropout1')(X)
+    X = SpatialDropout2D(0.5, name='spatial_dropout')(X)
     X = BatchNormalization(axis=3, name='bn1')(X)
 
     # 4. Dense Head
     X = Flatten()(X)
-    X = Dense(256, activation='relu', name='fc1', kernel_regularizer=regularizers.l2(l2_penalty))(X)
+    X = Dense(64, activation='relu', name='fc1', kernel_regularizer=regularizers.l2(l2_penalty))(X)
     X = Dropout(0.45, name='dropout3')(X)
     X = BatchNormalization(axis=1, name='bn3')(X)
 
     # Final Binary Classification
-    output = Dense(1, activation='sigmoid', name='fc2')(X)
+    output = Dense(1, activation='sigmoid', name='fc2', kernel_regularizer=regularizers.l2(l2_penalty))(X)
 
     return Model(inputs=leaf_input, outputs=output, name='tnt_icu_convnet')
 
@@ -72,7 +72,7 @@ def train_xgb_teacher(X_raw, y):
     
     dtrain = xgb.DMatrix(X_flat, label=y_flat)
     params = {
-        'max_depth': 9,
+        'max_depth': 6,
         'objective': 'binary:logistic',
         'seed': 42,
         'verbosity': 0
@@ -116,6 +116,7 @@ def run_cv():
         # 1. XGBoost Feature Engineering
         print("Training XGBoost teacher...")
         bst = train_xgb_teacher(X_tr_norm, y[train_idx])
+        bst.save_model(f'plots_tnt/xgb_teacher_fold{i}.json')
         
         # 2. Extract Leaf Sequences
         print("Generating leaf indices...")
@@ -130,7 +131,8 @@ def run_cv():
         model = create_tnt_convnet(
             num_trees=num_trees, 
             max_leaves_per_tree=max_leaf,
-            embedding_dim=8
+            embedding_dim=4,
+            l2_penalty=0.01
         )
         
         sgd = optimizers.SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=True)
@@ -144,6 +146,13 @@ def run_cv():
 
         ckpt_path = f'plots_tnt/fold{i}_best.keras'
         ckpt = ModelCheckpoint(ckpt_path, monitor='val_loss', save_best_only=True)
+        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+        
+        def lr_schedule(epoch):
+            if epoch < 10: return 0.01
+            if epoch < 25: return 0.005
+            return 0.001
+        lr_decay = LearningRateScheduler(lr_schedule)
         
         model.fit(
             L_tr, y[train_idx], 
@@ -151,7 +160,7 @@ def run_cv():
             batch_size=32,
             class_weight={0: 1, 1: 10},
             validation_data=(L_vl, y[val_idx]),
-            callbacks=[ckpt],
+            callbacks=[ckpt, early_stop, lr_decay],
             verbose=1
         )
 
