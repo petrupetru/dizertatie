@@ -167,9 +167,9 @@ def train_dgbdt_fold(
 
             for m in range(model.num_trees):
                 residual = yb - pred_so_far.detach()
-                weighted_prob = beta[m] * torch.sigmoid(tree_outputs[m])
-                total_loss = total_loss + mse(weighted_prob, residual) + penalties[m]
-                pred_so_far = pred_so_far + weighted_prob
+                tree_contribution = beta[m] * torch.sigmoid(tree_outputs[m])
+                total_loss = total_loss + mse(tree_contribution, residual) + penalties[m]
+                pred_so_far = pred_so_far + tree_contribution.detach()
 
             total_loss.backward()
             optimizer.step()
@@ -191,9 +191,9 @@ def train_dgbdt_fold(
                 beta_v = model.beta
                 for m in range(model.num_trees):
                     residual_v = yb - pred_so_far_v
-                    weighted_prob_v = beta_v[m] * torch.sigmoid(tree_outputs_v[m])
-                    val_loss = val_loss + mse(weighted_prob_v, residual_v) + penalties_v[m]
-                    pred_so_far_v = pred_so_far_v + weighted_prob_v
+                    tree_contribution_v = beta_v[m] * torch.sigmoid(tree_outputs_v[m])
+                    val_loss = val_loss + mse(tree_contribution_v, residual_v) + penalties_v[m]
+                    pred_so_far_v = pred_so_far_v + tree_contribution_v
                 val_running_loss += val_loss.item() * xb.size(0)
         model.train()
 
