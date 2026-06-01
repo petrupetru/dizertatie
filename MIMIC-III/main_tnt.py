@@ -7,7 +7,7 @@ from tensorflow.keras.layers import (Input, Activation, BatchNormalization, Flat
                                      Conv2D, AveragePooling2D, Dropout, Reshape, Dense)
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 
 from preprocess import build_dataset
 from tnt_layers import TreeEmbeddingLayer
@@ -99,7 +99,7 @@ def run_cv():
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     cv_idx = list(cv.split(X=np.zeros(n_patients), y=y))
 
-    predictions, ground_truth = [], []
+    predictions, ground_truth, fold_aurocs, fold_auprcs = [], [], [], []
     os.makedirs('plots_tnt', exist_ok=True)
 
     for i, (train_idx, val_idx) in enumerate(cv_idx):
@@ -150,8 +150,8 @@ def run_cv():
         )
 
         ckpt_path = f'plots_tnt/fold{i}_best.keras'
-        ckpt = ModelCheckpoint(ckpt_path, monitor='val_loss', save_best_only=True)
-        early_stop = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
+        ckpt = ModelCheckpoint(ckpt_path, monitor='val_auprc', save_best_only=True, mode='max')
+        early_stop = EarlyStopping(monitor='val_auprc', patience=12, restore_best_weights=True, mode='max')
         
         model.fit(
             L_tr, y[train_idx], 
@@ -164,8 +164,19 @@ def run_cv():
         )
 
         model.load_weights(ckpt_path)
-        predictions.append(model.predict(L_vl))
+        fold_preds = model.predict(L_vl)
+        predictions.append(fold_preds)
         ground_truth.append(y[val_idx])
+
+        fold_auc = roc_auc_score(y[val_idx], fold_preds)
+        fold_prc = average_precision_score(y[val_idx], fold_preds)
+        print(f"Fold {i} Saved Model -> AUROC: {fold_auc:.4f}, AUPRC: {fold_prc:.4f}")
+        fold_aurocs.append(fold_auc)
+        fold_auprcs.append(fold_prc)
+
+    print(f"\nFinal TNT-ConvNet {len(cv_idx)}-fold CV Results:")
+    print(f"Mean AUROC: {np.mean(fold_aurocs):.4f} ± {np.std(fold_aurocs):.4f}")
+    print(f"Mean AUPRC: {np.mean(fold_auprcs):.4f} ± {np.std(fold_auprcs):.4f}")
 
     # 4. Global Evaluation
     cross_validation_plot_roc(
