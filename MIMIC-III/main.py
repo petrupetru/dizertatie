@@ -164,7 +164,13 @@ def train():
 
         model = create_model((1, n_predictors, 48))
         sgd = optimizers.SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=True)
-        model.compile(optimizer=sgd, loss='binary_crossentropy', metrics=['accuracy'])
+        model.compile(
+            optimizer=sgd, 
+            loss='binary_crossentropy', 
+            metrics=['accuracy', 
+                     tf.keras.metrics.AUC(name='auroc'), 
+                     tf.keras.metrics.AUC(name='auprc', curve='PR')]
+        )
 
         Xtr = np.nan_to_num((X[train_idx] - fold_mean[i]) / (fold_std[i] + 1e-8))
         Xvl = np.nan_to_num((X[val_idx]   - fold_mean[i]) / (fold_std[i] + 1e-8))

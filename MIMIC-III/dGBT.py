@@ -181,11 +181,16 @@ def train_dgbdt_fold(
         # Validation loss
         model.eval()
         val_running_loss = 0.0
+        val_probs, val_labels = [], []
         with torch.no_grad():
             for xb, yb in val_loader:
                 xb = xb.to(device)
                 yb = yb.to(device)
-                tree_outputs_v, penalties_v, _ = model(xb, is_training_data=True)
+                tree_outputs_v, penalties_v, ensemble_prob_v = model(xb, is_training_data=True)
+                
+                val_probs.append(ensemble_prob_v.cpu())
+                val_labels.append(yb.cpu())
+                
                 pred_so_far_v = torch.zeros_like(yb)
                 val_loss = torch.tensor(0.0, device=device)
                 beta_v = model.beta
@@ -198,10 +203,17 @@ def train_dgbdt_fold(
         model.train()
 
         avg_val_loss = val_running_loss / len(val_loader.dataset)
+
+        val_probs = torch.cat(val_probs, dim=0).numpy().flatten()
+        val_labels = torch.cat(val_labels, dim=0).numpy().flatten()
+        epoch_auroc = roc_auc_score(val_labels, val_probs)
+        epoch_auprc = average_precision_score(val_labels, val_probs)
+
         if verbose:
             print(
                 f"dGBDT Epoch [{epoch:3d}/{num_epochs}]  "
-                f"Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}"
+                f"Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}  "
+                f"Val AUROC: {epoch_auroc:.4f}  Val AUPRC: {epoch_auprc:.4f}"
             )
 
     model.eval()

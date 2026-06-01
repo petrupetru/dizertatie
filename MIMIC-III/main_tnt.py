@@ -134,7 +134,13 @@ def run_cv():
         )
         
         sgd = optimizers.SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=True)
-        model.compile(optimizer=sgd, loss='binary_crossentropy', metrics=['accuracy'])
+        model.compile(
+            optimizer=sgd, 
+            loss='binary_crossentropy', 
+            metrics=['accuracy', 
+                     tf.keras.metrics.AUC(name='auroc'), 
+                     tf.keras.metrics.AUC(name='auprc', curve='PR')]
+        )
 
         ckpt_path = f'plots_tnt/fold{i}_best.keras'
         ckpt = ModelCheckpoint(ckpt_path, monitor='val_loss', save_best_only=True)
