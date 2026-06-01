@@ -2,6 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
+import pandas as pd
 import torch
 import numpy as np
 import xgboost as xgb
@@ -98,9 +99,9 @@ def print_results(name, results):
 
 
 if __name__ == "__main__":
-    DATA_FRACTION = 0.01  # e.g. 0.1 to use 10% of data; None to use all
+    DATA_FRACTION = None  # e.g. 0.1 to use 10% of data; None to use all
     MODELS_DIR    = "saved_models"  # directory to save/load results; None to disable
-    FORCE_RETRAIN = False           # set True to ignore cached results and retrain
+    FORCE_RETRAIN = True           # set True to ignore cached results and retrain
 
     print("Loading and preprocessing data...")
     df = preprocess_diabetes(DATA_FILE)
@@ -108,6 +109,12 @@ if __name__ == "__main__":
         sss = StratifiedShuffleSplit(n_splits=1, train_size=DATA_FRACTION, random_state=SEED)
         idx, _ = next(sss.split(df, df[LABEL_NAME]))
         df = df.iloc[idx].reset_index(drop=True)
+
+    # Downsample majority class (not readmitted, label=0) to match minority class
+    pos = df[df[LABEL_NAME] == 1]
+    neg = df[df[LABEL_NAME] == 0].sample(n=len(pos), random_state=SEED)
+    df = pd.concat([pos, neg]).sample(frac=1, random_state=SEED).reset_index(drop=True)
+
     print(f"Dataset shape after preprocessing: {df.shape}")
     print(f"Positive rate: {df[LABEL_NAME].mean():.4f}")
 

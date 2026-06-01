@@ -2,4 +2,9 @@ __pycache__
 .venv
 papers
 *.pkl
+*.pickle
+*.zip
+*.csv
 saved_models
+plots
+plots_colab

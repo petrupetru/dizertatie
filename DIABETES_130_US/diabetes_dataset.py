@@ -5,122 +5,162 @@ from torch.utils.data import Dataset
 
 from constants import FEATURE_NAMES, LABEL_NAME
 
+_DISCHARGE_REMOVE = {11, 13, 14, 19, 20, 21}
+
+# Medications with >5% prescription rate; kept for OHE
+_MED_COLS = [
+    "insulin", "metformin", "glipizide", "glyburide",
+    "pioglitazone", "rosiglitazone", "glimepiride",
+]
+_MED_CATS = ["Down", "No", "Steady", "Up"]   # fixed OHE category set
+
+# Age bracket -> midpoint
+_AGE_MIDPOINT = {
+    "[0-10)": 5,   "[10-20)": 15,  "[20-30)": 25,  "[30-40)": 35,
+    "[40-50)": 45, "[50-60)": 55,  "[60-70)": 65,  "[70-80)": 75,
+    "[80-90)": 85, "[90-100)": 95,
+}
+
+# ICD-9 clinical category labels (same 9 used for the multi-label diagnosis feature)
+_DIAG_CATS = [
+    "Circulatory", "Respiratory", "Digestive", "Diabetes",
+    "Injury", "Musculoskeletal", "Genitourinary", "Neoplasms", "Other",
+]
+
 
 def _map_diag(d):
-    """Map an ICD-9 code to one of 9 disease categories (0-8)."""
     if pd.isna(d):
-        return 8
-    d_str = str(d).strip()
-    if d_str.startswith("E") or d_str.startswith("V"):
-        return 8
+        return "Other"
+    s = str(d).strip()
+    if s.startswith("E") or s.startswith("V"):
+        return "Other"
     try:
-        d_val = float(d_str)
+        v = float(s)
     except ValueError:
-        return 8
-
-    if 390 <= d_val <= 459 or d_val == 785:
-        return 0  # circulatory
-    if 460 <= d_val <= 519 or d_val == 786:
-        return 1  # respiratory
-    if 520 <= d_val <= 579 or d_val == 787:
-        return 2  # digestive
-    if 250 <= d_val < 251:
-        return 3  # diabetes
-    if 800 <= d_val <= 999:
-        return 4  # injury
-    if 710 <= d_val <= 739:
-        return 5  # musculoskeletal
-    if 580 <= d_val <= 629 or d_val == 788:
-        return 6  # genitourinary
-    if 140 <= d_val <= 239:
-        return 7  # neoplasms
-    return 8  # other
+        return "Other"
+    if 390 <= v <= 459 or v == 785: return "Circulatory"
+    if 460 <= v <= 519 or v == 786: return "Respiratory"
+    if 520 <= v <= 579 or v == 787: return "Digestive"
+    if 250 <= v < 251:              return "Diabetes"
+    if 800 <= v <= 999:             return "Injury"
+    if 710 <= v <= 739:             return "Musculoskeletal"
+    if 580 <= v <= 629 or v == 788: return "Genitourinary"
+    if 140 <= v <= 239:             return "Neoplasms"
+    return "Other"
 
 
-def preprocess_diabetes(filepath):
+def _apply_top_n(series, n, missing_fill=None):
+    """Keep the top-n most frequent categories; collapse the rest to 'Other'.
+
+    If *missing_fill* is given, NaN is filled with that label before counting.
+    """
+    s = series.fillna(missing_fill) if missing_fill is not None else series
+    top = s.value_counts().nlargest(n).index
+    return s.apply(lambda x: x if x in top else "Other")
+
+
+def preprocess_diabetes(filepath, top_n=None):
+    """Preprocess the Diabetes 130-US dataset.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to diabetic_data.csv.
+    top_n : dict | None
+        Per-column override of how many top categories to retain before
+        collapsing the rest to 'Other'.
+        Keys: discharge_id, admission_type, admission_src, specialty, race.
+        Pass None to use defaults (from diabetes_analysis.py coverage analysis).
+    """
+    _top_n = {
+        "discharge_id":   5,   # ~95% coverage
+        "admission_type": 3,   # ~89% coverage
+        "admission_src":  3,   # ~92% coverage
+        "specialty":      5,   # +Missing bucket
+        "race":           3,   # +Missing bucket
+    }
+    if top_n:
+        _top_n.update(top_n)
+
     df = pd.read_csv(filepath)
-
-    # Remove patients who died or were discharged to hospice (cannot be readmitted)
-    discharge_remove = {11, 13, 14, 19, 20, 21}
-    df = df[~df["discharge_disposition_id"].isin(discharge_remove)].copy()
-
-    # Replace sentinel missing value
+    df = df[~df["discharge_disposition_id"].isin(_DISCHARGE_REMOVE)].copy()
     df = df.replace("?", np.nan)
+    df = df.sort_values("encounter_id").drop_duplicates("patient_nbr", keep="first")
 
-    # Keep only the first encounter per patient to avoid temporal leakage
-    df = df.sort_values("encounter_id").drop_duplicates(subset="patient_nbr", keep="first")
-
-    # Drop identifier and high-missingness columns
-    df = df.drop(columns=["encounter_id", "patient_nbr", "weight", "payer_code"])
-
-    # Binary target: readmitted within 30 days = 1
     df[LABEL_NAME] = (df["readmitted"] == "<30").astype(int)
-    df = df.drop(columns=["readmitted"])
 
-    # Age: ordinal
-    age_map = {
-        "[0-10)": 0, "[10-20)": 1, "[20-30)": 2, "[30-40)": 3, "[40-50)": 4,
-        "[50-60)": 5, "[60-70)": 6, "[70-80)": 7, "[80-90)": 8, "[90-100)": 9,
-    }
-    df["age_enc"] = df["age"].map(age_map).astype(float)
-    df = df.drop(columns=["age"])
+    # ── Binary flags ──────────────────────────────────────────────────────────
+    df["change_bin"]      = (df["change"] == "Ch").astype(float)
+    df["diabetesMed_bin"] = (df["diabetesMed"] == "Yes").astype(float)
 
-    # Race: label encode; missing/unknown → 5
-    race_map = {"Caucasian": 0, "AfricanAmerican": 1, "Hispanic": 2, "Asian": 3, "Other": 4}
-    df["race_enc"] = df["race"].map(race_map).fillna(5).astype(float)
-    df = df.drop(columns=["race"])
+    # ── Age: midpoint of each 10-year bracket (numeric) ───────────────────────
+    df["age_midpoint"] = df["age"].map(_AGE_MIDPOINT).fillna(75).astype(float)
 
-    # Gender: binary
-    df["gender_enc"] = df["gender"].map({"Female": 0, "Male": 1}).fillna(0).astype(float)
-    df = df.drop(columns=["gender"])
+    # ── Gender: binary (1 = Male) ─────────────────────────────────────────────
+    df["gender_male"] = (df["gender"] == "Male").astype(float)
 
-    # Medical specialty: group rare (<200 occurrences) as "Other", label encode
-    df["medical_specialty"] = df["medical_specialty"].fillna("Unknown")
-    rare = df["medical_specialty"].value_counts()
-    rare = rare[rare < 200].index
-    df["medical_specialty"] = df["medical_specialty"].replace(rare, "Other")
-    df["medical_specialty_enc"] = df["medical_specialty"].astype("category").cat.codes.astype(float)
-    df = df.drop(columns=["medical_specialty"])
+    # ── Race: top_n + Missing bucket ──────────────────────────────────────────
+    df["race"] = _apply_top_n(df["race"], _top_n["race"], missing_fill="Missing")
 
-    # Glucose serum and HbA1c: ordinal
-    df["max_glu_serum_enc"] = df["max_glu_serum"].map({"Norm": 1, ">200": 2, ">300": 3}).fillna(0).astype(float)
-    df["A1Cresult_enc"]     = df["A1Cresult"].map({"Norm": 1, ">7": 2, ">8": 3}).fillna(0).astype(float)
-    df = df.drop(columns=["max_glu_serum", "A1Cresult"])
+    # ── Discharge disposition: top_n ──────────────────────────────────────────
+    df["discharge_id"] = _apply_top_n(
+        df["discharge_disposition_id"].astype(str), _top_n["discharge_id"]
+    )
 
-    # Diagnoses: ICD-9 → disease category
-    for col in ["diag_1", "diag_2", "diag_3"]:
-        df[col + "_cat"] = df[col].apply(_map_diag).astype(float)
-    df = df.drop(columns=["diag_1", "diag_2", "diag_3"])
+    # ── Admission type: top_n ─────────────────────────────────────────────────
+    df["admission_type"] = _apply_top_n(
+        df["admission_type_id"].astype(str), _top_n["admission_type"]
+    )
 
-    # Medication columns: No/Steady/Up/Down → 0/1/2/3
-    med_map = {"No": 0, "Steady": 1, "Up": 2, "Down": 3}
-    single_meds = [
-        "metformin", "repaglinide", "nateglinide", "chlorpropamide",
-        "glimepiride", "acetohexamide", "glipizide", "glyburide",
-        "tolbutamide", "pioglitazone", "rosiglitazone", "acarbose",
-        "miglitol", "troglitazone", "tolazamide", "examide",
-        "citoglipton", "insulin",
-    ]
-    for col in single_meds:
-        df[col] = df[col].map(med_map).fillna(0).astype(float)
+    # ── Admission source: top_n ───────────────────────────────────────────────
+    df["admission_src"] = _apply_top_n(
+        df["admission_source_id"].astype(str), _top_n["admission_src"]
+    )
 
-    combo_meds = {
-        "glyburide-metformin": "glyburide_metformin",
-        "glipizide-metformin": "glipizide_metformin",
-        "glimepiride-pioglitazone": "glimepiride_pioglitazone",
-        "metformin-rosiglitazone": "metformin_rosiglitazone",
-        "metformin-pioglitazone": "metformin_pioglitazone",
-    }
-    for old, new in combo_meds.items():
-        df[new] = df[old].map(med_map).fillna(0).astype(float)
-    df = df.drop(columns=list(combo_meds.keys()))
+    # ── Medical specialty: top_n + Missing bucket ─────────────────────────────
+    df["specialty"] = _apply_top_n(
+        df["medical_specialty"], _top_n["specialty"], missing_fill="Missing"
+    )
 
-    # Binary flags
-    df["change_enc"]      = (df["change"] == "Ch").astype(float)
-    df["diabetesMed_enc"] = (df["diabetesMed"] == "Yes").astype(float)
-    df = df.drop(columns=["change", "diabetesMed"])
+    # ── Diagnosis: multi-label from diag_1 + diag_2 + diag_3 ─────────────────
+    # Each patient gets a 1 in any category present across all 3 diagnosis fields.
+    for cat in _DIAG_CATS:
+        df[f"diag_{cat}"] = 0.0
+    for diag_col in ["diag_1", "diag_2", "diag_3"]:
+        mapped = df[diag_col].apply(_map_diag)
+        for cat in _DIAG_CATS:
+            df.loc[mapped == cat, f"diag_{cat}"] = 1.0
 
-    return df.reset_index(drop=True)
+    # ── HbA1c: 5-level ───────────────────────────────────────────────────────
+    _high    = df["A1Cresult"] == ">8"
+    _changed = df["change"] == "Ch"
+    df["hba1c"] = "None"
+    df.loc[df["A1Cresult"] == "Norm", "hba1c"] = "Norm"
+    df.loc[df["A1Cresult"] == ">7",   "hba1c"] = ">7"
+    df.loc[_high & ~_changed,         "hba1c"] = "high_no_change"
+    df.loc[_high & _changed,          "hba1c"] = "high_changed"
+
+    # ── Glucose serum: 4 levels ───────────────────────────────────────────────
+    df["glucose"] = df["max_glu_serum"].fillna("None")
+
+    # ── Medication OHE (4 categories: Down / No / Steady / Up) ───────────────
+    # Fixed category set ensures consistent columns across train/test splits.
+    for c in _MED_COLS:
+        df[f"med_{c}"] = pd.Categorical(df[c].fillna("No"), categories=_MED_CATS)
+    df = pd.get_dummies(df, columns=[f"med_{c}" for c in _MED_COLS], dtype=float)
+
+    # ── OHE for remaining categoricals ───────────────────────────────────────
+    def _ohe(col):
+        cats = sorted(df[col].dropna().unique())
+        df[col] = pd.Categorical(df[col], categories=cats)
+
+    ohe_cols = ["race", "discharge_id", "admission_type",
+                "admission_src", "specialty", "hba1c", "glucose"]
+    for col in ohe_cols:
+        _ohe(col)
+    df = pd.get_dummies(df, columns=ohe_cols, dtype=float)
+
+    return df[FEATURE_NAMES + [LABEL_NAME]].reset_index(drop=True)
 
 
 class DiabetesDataset(Dataset):
