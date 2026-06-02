@@ -129,9 +129,8 @@ def train():
     n_predictors  = input_df.index.get_level_values('measurement_name').nunique()
     print(f"Patients: {n_patients}, Predictors: {n_predictors}, Hours: {input_df.shape[1]}")
 
-    # Reshape to (Patients, Time, Predictors) then add channel dim -> (N, 48, 22, 1)
-    X = input_df.values.reshape((n_patients, n_predictors, 48)).transpose(0, 2, 1)
-    X = X.reshape((n_patients, 48, n_predictors, 1)).astype(np.float32)
+    X = input_df.values.reshape((n_patients, n_predictors, 48))
+    X = X.reshape((-1, 1, n_predictors, 48)).astype(np.float32)
     y = labels_df['mort_icu'].values[:, None].astype(np.float32)
     print(f"X shape: {X.shape}, y shape: {y.shape}, mortality rate: {y.mean():.3f}")
 
@@ -163,7 +162,7 @@ def train():
 
         ground_truth.append(y[val_idx])
 
-        model = create_model((48, n_predictors, 1))
+        model = create_model((1, n_predictors, 48))
         sgd = optimizers.SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=True)
         model.compile(
             optimizer=sgd, 
@@ -173,12 +172,8 @@ def train():
                      tf.keras.metrics.AUC(name='auprc', curve='PR')]
         )
 
-        # Reshape mean/std for correct broadcasting against (Batch, 48, 22, 1)
-        m_fold = fold_mean[i].reshape(1, 1, n_predictors, 1)
-        s_fold = fold_std[i].reshape(1, 1, n_predictors, 1)
-
-        Xtr = np.nan_to_num((X[train_idx] - m_fold) / (s_fold + 1e-8))
-        Xvl = np.nan_to_num((X[val_idx]   - m_fold) / (s_fold + 1e-8))
+        Xtr = np.nan_to_num((X[train_idx] - fold_mean[i]) / (fold_std[i] + 1e-8))
+        Xvl = np.nan_to_num((X[val_idx]   - fold_mean[i]) / (fold_std[i] + 1e-8))
 
         ckpt = ModelCheckpoint(f'plots/kfold{i}_best.keras', monitor='val_loss', save_best_only=True)
         hist = model.fit(Xtr, y[train_idx], epochs=epochs, batch_size=batch_size,
