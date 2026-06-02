@@ -10,8 +10,9 @@ from tqdm import tqdm
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data', 'mimic-iii-clinical-database')
 OUT_DIR   = os.path.dirname(__file__)
 
-INPUTS_FILE  = os.path.join(OUT_DIR, 'MIMICIII_sapsii_dataset_inputs.pickle')
-LABELS_FILE  = os.path.join(OUT_DIR, 'MIMICIII_sapsii_dataset_mortality_labels.pickle')
+INPUTS_FILE         = os.path.join(OUT_DIR, 'MIMICIII_sapsii_dataset_inputs.pickle')
+INPUTS_SPARSE_FILE  = os.path.join(OUT_DIR, 'MIMICIII_sapsii_dataset_inputs_sparse.pickle')
+LABELS_FILE         = os.path.join(OUT_DIR, 'MIMICIII_sapsii_dataset_mortality_labels.pickle')
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -157,6 +158,23 @@ def build_surgical_flag(services, cohort_hadm_ids):
     svc = services[services['hadm_id'].isin(cohort_hadm_ids)].copy()
     svc['surgical'] = svc['curr_service'].str.lower().str.contains('surg', na=False).astype(int)
     return svc.groupby('hadm_id')['surgical'].max().reset_index()
+
+
+def filter_cohort_to_sql_joins(cohort, diagnoses, services):
+    """
+    The original SQL uses INNER JOIN on diagnoses_icd and services.
+    Patients with no ICD codes or no service records are excluded.
+    Apply the same filter to match the paper's cohort.
+    """
+    has_diagnoses = diagnoses['hadm_id'].isin(cohort['hadm_id'])
+    valid_hadm = diagnoses[has_diagnoses]['hadm_id'].unique()
+    cohort = cohort[cohort['hadm_id'].isin(valid_hadm)]
+
+    has_services = services['hadm_id'].isin(cohort['hadm_id'])
+    valid_hadm2 = services[has_services]['hadm_id'].unique()
+    cohort = cohort[cohort['hadm_id'].isin(valid_hadm2)]
+
+    return cohort.copy()
 
 
 # ── chartevents ───────────────────────────────────────────────────────────────
@@ -387,7 +405,7 @@ def impute(df):
     for gcs in ['GCSEyes', 'GCSMotor', 'GCSVerbal']:
         df.loc[sel(gcs)] = df.loc[sel(gcs)].ffill(axis=1)
 
-    df.loc[sel('FiO2')] = df.loc[sel('FiO2')].ffill(axis=1).fillna(0.2)
+    df.loc[sel('FiO2')] = df.loc[sel('FiO2')].ffill(axis=1).fillna(21.0)
     df.loc[sel('PO2')]  = df.loc[sel('PO2')].bfill(axis=1).ffill(axis=1)
 
     df = df.ffill(axis=1).bfill(axis=1)
@@ -396,17 +414,20 @@ def impute(df):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def build_dataset(force=False):
-    if not force and os.path.exists(INPUTS_FILE) and os.path.exists(LABELS_FILE):
+def build_dataset(force=False, sparse=False):
+    inputs_path = INPUTS_SPARSE_FILE if sparse else INPUTS_FILE
+    if not force and os.path.exists(inputs_path) and os.path.exists(LABELS_FILE):
         print("Loading cached pickles...")
-        return pd.read_pickle(INPUTS_FILE), pd.read_pickle(LABELS_FILE)
+        return pd.read_pickle(inputs_path), pd.read_pickle(LABELS_FILE)
 
     print("Loading raw CSV files...")
     icustays, patients, admissions, diagnoses, services, chartevents, labevents, outputevents = load_raw()
 
     print("Building cohort...")
     cohort = build_cohort(icustays, patients, admissions)
-    print(f"  Cohort size: {len(cohort)} patients")
+    print(f"  Cohort size before join filter: {len(cohort)} patients")
+    cohort = filter_cohort_to_sql_joins(cohort, diagnoses, services)
+    print(f"  Cohort size after join filter: {len(cohort)} patients")
 
     print("Building diagnosis flags...")
     diag_flags = build_diagnosis_flags(diagnoses, cohort['hadm_id'])
@@ -431,11 +452,14 @@ def build_dataset(force=False):
     print(f"  Input shape before imputation: {sapsII_inputs.shape}")
     print(f"  Measurement names: {sapsII_inputs.index.get_level_values('measurement_name').unique().tolist()}")
 
-    print("Imputing...")
-    sapsII_inputs = impute(sapsII_inputs)
+    if not sparse:
+        print("Imputing...")
+        sapsII_inputs = impute(sapsII_inputs)
+    else:
+        print("Skipping imputation (sparse mode).")
 
     print("Saving pickles...")
-    sapsII_inputs.to_pickle(INPUTS_FILE)
+    sapsII_inputs.to_pickle(inputs_path)
     mortality_labels.to_pickle(LABELS_FILE)
 
     print("Done.")
@@ -443,8 +467,12 @@ def build_dataset(force=False):
 
 
 if __name__ == '__main__':
-    inputs, labels = build_dataset(force=True)
+    inputs, labels = build_dataset(force=True, sparse=False)
     print(f"\nFinal input shape:  {inputs.shape}")
     print(f"Final labels shape: {labels.shape}")
     print(f"Mortality rate: {labels['mort_icu'].mean():.3f}")
     print(f"NaN count: {inputs.isna().sum().sum()}")
+
+    inputs_sparse, _ = build_dataset(force=True, sparse=True)
+    print(f"\nSparse input shape: {inputs_sparse.shape}")
+    print(f"NaN count (sparse): {inputs_sparse.isna().sum().sum()}")

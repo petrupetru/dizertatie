@@ -89,7 +89,7 @@ def get_leaf_indices(bst, X_raw):
     return leaf_indices.reshape(N, H, -1)
 
 def run_cv():
-    input_df, labels_df = build_dataset()
+    input_df, labels_df = build_dataset(force=False, sparse=True)
     n_patients    = input_df.index.get_level_values('subject_id').nunique()
     n_predictors  = input_df.index.get_level_values('measurement_name').nunique()
     
