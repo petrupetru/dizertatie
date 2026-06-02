@@ -141,21 +141,47 @@ def run_distillation():
                 optimizer.step()
                 running_loss += total_loss.item() * xb.size(0)
             
-            if epoch % 10 == 0:
-                print(f"  Epoch {epoch:2d} | Avg Loss: {running_loss/len(train_idx):.6f}")
+            avg_train_loss = running_loss / len(train_idx)
+
+            # --- Validation Phase ---
+            student.eval()
+            val_running_loss = 0.0
+            val_probs, val_labels = [], []
+            with torch.no_grad():
+                for vxb, vyb in val_loader:
+                    vxb, vyb = vxb.to(device), vyb.to(device)
+                    v_tree_outputs, v_penalties, v_ensemble_prob = student(vxb, is_training_data=True)
+                    
+                    val_probs.append(v_ensemble_prob.cpu())
+                    val_labels.append(vyb.cpu())
+                    
+                    v_pred_so_far = torch.zeros_like(vyb)
+                    v_total_loss = torch.tensor(0.0, device=device)
+                    for m in range(student.num_trees):
+                        v_residual = vyb - v_pred_so_far
+                        v_tree_contribution = student.beta[m] * torch.sigmoid(v_tree_outputs[m])
+                        v_total_loss += mse(v_tree_contribution, v_residual) + v_penalties[m]
+                        v_pred_so_far += v_tree_contribution
+                    val_running_loss += v_total_loss.item() * vxb.size(0)
+            
+            avg_val_loss = val_running_loss / len(val_idx)
+            val_probs_cat = torch.cat(val_probs).numpy().flatten()
+            val_labels_cat = torch.cat(val_labels).numpy().flatten()
+            epoch_auc = roc_auc_score(val_labels_cat, val_probs_cat)
+            epoch_prc = average_precision_score(val_labels_cat, val_probs_cat)
+
+            print(
+                f"  Epoch [{epoch:3d}/50]  "
+                f"Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}  "
+                f"Val AUROC: {epoch_auc:.4f}  Val AUPRC: {epoch_prc:.4f}"
+            )
 
         # 6. Cross-Validation Evaluation
-        student.eval()
-        all_probs = []
-        with torch.no_grad():
-            for xb, _ in val_loader:
-                all_probs.append(student(xb.to(device)).cpu())
+        # Use the metrics calculated in the final epoch's validation phase
+        fold_auc = epoch_auc
+        fold_prc = epoch_prc
         
-        y_pred = torch.cat(all_probs).numpy().flatten()
-        fold_auc = roc_auc_score(y[val_idx], y_pred)
-        fold_prc = average_precision_score(y[val_idx], y_pred)
-        
-        print(f"Fold {i} Result -> AUROC: {fold_auc:.4f}, AUPRC: {fold_prc:.4f}")
+        print(f"\nFold {i} Final Result -> AUROC: {fold_auc:.4f}, AUPRC: {fold_prc:.4f}")
         all_aurocs.append(fold_auc)
         all_auprcs.append(fold_prc)
 
