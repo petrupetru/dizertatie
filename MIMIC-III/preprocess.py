@@ -414,7 +414,7 @@ def impute(df):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def build_dataset(force=False, sparse=False, data_fraction=None):
+def build_dataset(force=False, sparse=False):
     inputs_path = INPUTS_SPARSE_FILE if sparse else INPUTS_FILE
     if not force and os.path.exists(inputs_path) and os.path.exists(LABELS_FILE):
         print("Loading cached pickles...")
@@ -428,10 +428,6 @@ def build_dataset(force=False, sparse=False, data_fraction=None):
     print(f"  Cohort size before join filter: {len(cohort)} patients")
     cohort = filter_cohort_to_sql_joins(cohort, diagnoses, services)
     print(f"  Cohort size after join filter: {len(cohort)} patients")
-
-    if data_fraction is not None:
-        cohort = cohort.sample(frac=data_fraction, random_state=42).reset_index(drop=True)
-        print(f"  Cohort size after sampling {data_fraction:.0%}: {len(cohort)} patients")
 
     print("Building diagnosis flags...")
     diag_flags = build_diagnosis_flags(diagnoses, cohort['hadm_id'])
