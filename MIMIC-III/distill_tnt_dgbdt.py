@@ -18,15 +18,15 @@ from utils import set_seed, seed_worker
 def load_teacher(fold_idx):
     """Loads all components of the teacher pipeline for a specific fold."""
     # Load normalization stats saved during main_tnt execution
-    m = np.load(f'plots_tnt/fold{fold_idx}_mean.npy')
-    s = np.load(f'plots_tnt/fold{fold_idx}_std.npy')
+    m = np.load(f'models/tnt/fold{fold_idx}_mean.npy')
+    s = np.load(f'models/tnt/fold{fold_idx}_std.npy')
     
     # Load XGBoost (used for feature engineering / leaf index extraction)
     bst = xgb.Booster()
-    bst.load_model(f'plots_tnt/fold{fold_idx}_xgb_teacher.json')
+    bst.load_model(f'models/tnt/fold{fold_idx}_xgb_teacher.json')
     
     # Load TNT Model (Neural Component)
-    model_path = f'plots_tnt/fold{fold_idx}_best.keras'
+    model_path = f'models/tnt/fold{fold_idx}_best.keras'
     # custom_objects is required to correctly instantiate the TreeEmbeddingLayer
     tnt_teacher = tf.keras.models.load_model(
         model_path, 
@@ -205,8 +205,8 @@ def run_distillation():
         # Restore the best checkpoint and use its metrics
         student.load_state_dict(best_state)
         
-        os.makedirs('plots_distill', exist_ok=True)
-        torch.save(student.state_dict(), f'plots_distill/dgbdt_student_fold_{i}.pt')
+        os.makedirs('models/distill', exist_ok=True)
+        torch.save(student.state_dict(), f'models/distill/dgbdt_student_fold_{i}.pt')
 
         fold_auc = best_auc
         fold_prc = best_prc

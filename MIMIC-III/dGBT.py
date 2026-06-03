@@ -109,7 +109,7 @@ def train_dgbdt_fold(
     lamda: float = 1e-3,
     verbose: bool = True,
     fold_idx: int = 0,
-    save_dir: str = "plots_dgbdt",
+    save_dir: str = "models/dgbdt",
 ) -> dict:
     """Train dGBDT directly against ground-truth labels (no distillation).
 
@@ -269,7 +269,7 @@ def train_kfold_dgbdt(
     lamda: float = 1e-3,
     seed: int = 42,
     verbose: bool = True,
-    save_dir: str = "plots_dgbdt",
+    save_dir: str = "models/dgbdt",
 ) -> dict:
     """K-fold cross-validation for the standalone dGBDT on MIMIC-III.
 
