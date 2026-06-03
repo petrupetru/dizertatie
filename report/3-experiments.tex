@@ -1,6 +1,64 @@
 \chapter{Experiments}
 \section{Implementation}
-I used PyTorch framework to implement the Distillable Gradient Boosting Decision Trees architecture and a Multilayer Perceptron that serves as the DNN. For the tree embdeddings I used XGBoost and I extracted for each tree in the ensamble the index of the leaf that was at the end of the decision path for each sample. The 
+I used the PyTorch framework to implement the Distillable Gradient Boosting Decision Trees architecture and a Multilayer Perceptron that serves as the DNN. For the tree embeddings I used XGBoost. After training the tree ensemble on the current fold, each sample is passed through and each tree outputs a leaf index. All leaf indices are One-Hot Encoded and sent to the DNN. The DNN takes the tree embeddings as input, concatenates them in groups and uses one Embedding layer per group to reduce the dimensionality of the input. The rest of the DNN is kept intact and just the input dimension is modified. 
+
+For the Soft Decision Tree I adapted a public implementation from github \footnote{https://github.com/xuyxu/Soft-Decision-Tree} of the Nicholas Frosst and Geoffrey Hinton SDT to my needs. More specifically, I solved nan handling by adding a mask for the missing values and imputed them as 0. This way, when a value is missing, its weight it’s ignored because the nan was converted to 0, but the mask is 1 so a different weight for missing features gets activated and the model learns a weight for a default direction when the feature is missing, simulating the default direction that XGBoost learns for handling sparse data. 
+
+The Distillable Gradient Boosting Decision Tree is an ensemble of Soft Trees that are linked together in a boosting manner, meaning that each tree is minimizing the residual error from the previous tree. As we iterate through the trees we store what is the sum of the previous trees so far to compute the residual that the current tree needs to estimate. The sum is detached from the PyTorch autograd, so the current iteration does not update the weights of the previous trees too. The Mean Squared Error between the current tree prediction and the residual is the tree loss, and the sum of all tree losses is the model target.
+
+The training is done using a Stratified 5-fold split on the dataset, with early stopping and saving the best model for each fold. Then the saved model is loaded and used as teacher for the dGBDT, using the distillation loss described. The residual of each tree becomes one part the residual relative to the ground truth and one part the residual relative to the teacher prediction, each one weighted by the factor $\alpha$ and $1 -\alpha$ respectively.
+
+\subsection{Evaluation Metrics}
+
+To evaluate the predictive performance of our models, I tracked two primary metrics: AUROC (Area Under the Receiver Operating Characteristic curve) and AUPRC (Area Under the Precision-Recall Curve). Both metrics assess model performance across a continuous range of classification thresholds, providing a more comprehensive evaluation than a single arbitrary cutoff point. 
+
+These metrics are derived from the standard components of a confusion matrix: True Positives ($\mathrm{TP}$), False Positives ($\mathrm{FP}$), True Negatives ($\mathrm{TN}$), and False Negatives ($\mathrm{FN}$).
+
+AUROC measures the model's ability to distinguish between the two classes. It is constructed by plotting the True Positive Rate ($\mathrm{TPR}$, or Recall) on the y-axis against the False Positive Rate ($\mathrm{FPR}$) on the x-axis at various classification thresholds $t$.
+
+The formulas for these rates are:
+\begin{equation}
+\mathrm{TPR}(t) = \mathrm{Recall}(t) = \frac{\mathrm{TP}(t)}{\mathrm{TP}(t) + \mathrm{FN}(t)}
+\end{equation}
+
+\begin{equation}
+\mathrm{FPR}(t) = \frac{\mathrm{FP}(t)}{\mathrm{FP}(t) + \mathrm{TN}(t)}
+\end{equation}
+
+The AUROC score represents the total area under this curve, calculated mathematically as an integral with respect to the False Positive Rate ($f$):
+\begin{equation}
+\mathrm{AUROC} = \int_{0}^{1} \mathrm{TPR}(f) \, df
+\end{equation}
+
+While AUROC is a standard metric, it can present an overly optimistic view of performance in highly imbalanced datasets (e.g., when benign cases significantly outnumber malignant ones). To account for this, I also used AUPRC, which plots Precision against Recall across varying thresholds. 
+
+Precision denotes the proportion of positive predictions that were actually positive, while Recall represents the proportion of actual positive cases successfully identified by the model:
+\begin{equation}
+\mathrm{Precision}(t) = \frac{\mathrm{TP}(t)}{\mathrm{TP}(t) + \mathrm{FP}(t)}
+\end{equation}
+
+The continuous formula for the area under the Precision-Recall curve integrates Precision over the change in Recall ($R$):
+\begin{equation}
+\mathrm{AUPRC} = \int_{0}^{1} \mathrm{Precision}(R) \, dR
+\end{equation}
+
+For both metrics the value is between 0 and 1, and bigger is better.
+
+\begin{equation}
+    distilation loss = il mut la locul lui TODO
+    \label{distilation_loss}
+\end{equation}
+
 \subsection{Proof of Concept}
+First experiment was conducted using the \textbf{UCI Wisconsin breast cancer} dataset, where the columns are 30 numerical features that describe the characteristics of a tumor and the label is the binary diagnosis, malign or benign. The features describe the following 10 measurements in three dimensions: \textit{radius, texture, perimeter, area, smoothness, compactness, concavity, concave points, symmetry, fractal dimension.} 
+The dataset has only 569 samples (357 benign and 212 malign) and has no missing values, so it is really easy to use and fast to run models over it. It was chosen just to test the architecture and prove that it works.
+
+Tree models are more than capable to handle missing data so variations of the experiment where random features were removed from samples were tested. First 20\% of the values were removed and then 40\% to see how the model performs with sparse data.
+
+For each sparsity level I tested multiple tree-based, DNN and Tree-NN fusions to see if the distillation has any real advantages over the normal models. For this dataset, the results were not very conclusive because all models performed really well.
+
+
+
+
 
 \section{Results}

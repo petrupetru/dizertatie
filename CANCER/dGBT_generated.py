@@ -38,7 +38,7 @@ class dGBDT(nn.Module):
         self,
         input_dim,
         num_trees=5,
-        tree_depth=5,
+        tree_depth=3,
         lamda=1e-3,
         use_cuda=False,
     ):

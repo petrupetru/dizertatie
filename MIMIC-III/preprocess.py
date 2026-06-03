@@ -473,6 +473,6 @@ if __name__ == '__main__':
     print(f"Mortality rate: {labels['mort_icu'].mean():.3f}")
     print(f"NaN count: {inputs.isna().sum().sum()}")
 
-    inputs_sparse, _ = build_dataset(force=True, sparse=True)
-    print(f"\nSparse input shape: {inputs_sparse.shape}")
-    print(f"NaN count (sparse): {inputs_sparse.isna().sum().sum()}")
+    # inputs_sparse, _ = build_dataset(force=True, sparse=True)
+    # print(f"\nSparse input shape: {inputs_sparse.shape}")
+    # print(f"NaN count (sparse): {inputs_sparse.isna().sum().sum()}")
