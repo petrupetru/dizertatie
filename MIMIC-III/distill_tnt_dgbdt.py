@@ -125,25 +125,26 @@ def run_distillation():
                 # Forward pass: get logit per tree and regularization penalties
                 tree_outputs, penalties, _ = student(xb, is_training_data=True)
                 
-                # Algorithm 2 (TNT paper): Stage-wise residual boosting distillation
-                pred_so_far = torch.zeros_like(yb)
+                # Algorithm 2 (TNT paper): Stage-wise residual boosting distillation.
+                # pred_so_far accumulates raw tree logits; residual is compared
+                # in probability space via sigmoid.  This is the critical fix:
+                # subtracting a probability target from sigmoid(logit_sum) allows
+                # the next tree to output a negative value to correct overestimates.
+                pred_so_far = torch.zeros_like(yb)  # raw logit accumulator
                 total_loss = torch.tensor(0.0, device=device)
                 
                 for m_idx in range(student.num_trees):
                     # Negative gradient of the distillation loss w.r.t s_{m-1}
                     residual = (
-                        alpha * (temp**2) * (ytb - pred_so_far.detach()) +
-                        (1.0 - alpha) * (yb - pred_so_far.detach())
+                        alpha * (temp**2) * (ytb - torch.sigmoid(pred_so_far.detach())) +
+                        (1.0 - alpha) * (yb - torch.sigmoid(pred_so_far.detach()))
                     )
                     
-                    # Contribution of current Soft Decision Tree
-                    contribution = student.beta[m_idx] * torch.sigmoid(tree_outputs[m_idx])
+                    # Raw tree output directly targets the residual (no beta*sigmoid wrapper)
+                    total_loss = total_loss + mse(tree_outputs[m_idx], residual) + penalties[m_idx]
                     
-                    # Accumulate loss for the current boosting stage
-                    total_loss = total_loss + mse(contribution, residual) + penalties[m_idx]
-                    
-                    # Update cumulative prediction for the next stage
-                    pred_so_far = pred_so_far + contribution.detach()
+                    # Update cumulative raw logit sum for the next stage
+                    pred_so_far = pred_so_far + tree_outputs[m_idx].detach()
                 
                 total_loss.backward()
                 optimizer.step()
@@ -166,12 +167,11 @@ def run_distillation():
                     v_total_loss = torch.tensor(0.0, device=device)
                     for m_idx in range(student.num_trees):
                         v_residual = (
-                            alpha * (temp**2) * (vytb - v_pred_so_far) +
-                            (1.0 - alpha) * (vyb - v_pred_so_far)
+                            alpha * (temp**2) * (vytb - torch.sigmoid(v_pred_so_far)) +
+                            (1.0 - alpha) * (vyb - torch.sigmoid(v_pred_so_far))
                         )
-                        v_contribution = student.beta[m_idx] * torch.sigmoid(v_tree_outputs[m_idx])
-                        v_total_loss += mse(v_contribution, v_residual) + v_penalties[m_idx]
-                        v_pred_so_far = v_pred_so_far + v_contribution
+                        v_total_loss += mse(v_tree_outputs[m_idx], v_residual) + v_penalties[m_idx]
+                        v_pred_so_far = v_pred_so_far + v_tree_outputs[m_idx]
                     val_running_loss += v_total_loss.item() * vxb.size(0)
             
             avg_val_loss = val_running_loss / len(val_idx)

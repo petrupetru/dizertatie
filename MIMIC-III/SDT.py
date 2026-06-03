@@ -81,6 +81,11 @@ class SDT(nn.Module):
 
     def forward(self, X, is_training_data=False):
         _mu, _penalty = self._forward(X)
+        # Each leaf outputs a weighted combination of its learned parameters.
+        # For output_dim=1 (dGBDT use case) this is an unbounded logit, which
+        # is required so later trees can output negative values to correct
+        # over-predictions.  Strict Frosst & Hinton (softmax per leaf) only
+        # applies when output_dim > 1 (multi-class probability distribution).
         y_pred = self.leaf_nodes(_mu)
 
         # When `X` is the training data, the model also returns the penalty

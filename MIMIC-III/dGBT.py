@@ -9,7 +9,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.utils.parametrize as parametrize
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import average_precision_score, roc_auc_score
@@ -22,20 +21,13 @@ import os
 MIMIC_INPUT_DIM = 22 * 48  # 1056
 
 
-class PositiveParam(nn.Module):
-    def __init__(self, eps=1e-6):
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, x):
-        return torch.nn.functional.softplus(x) + self.eps
-
-
 class dGBDT(nn.Module):
     """Distillable Gradient Boosted Decision Trees with SDT base learners.
 
-    Additive ensemble:  F(x) = sum_m beta_m * sigmoid(h_m(x))
-    where h_m is a Soft Decision Tree and beta_m is a learned tree weight.
+    Additive ensemble:  F(x) = sigmoid( sum_m h_m(x) )
+    where h_m is a Soft Decision Tree whose raw logit output is summed
+    stage-wise (Algorithm 2, TNT paper).  No learned tree weights — each
+    tree directly corrects the residual of the previous cumulative logit.
 
     input_dim should be the flattened feature size (default: 22 * 48 = 1056).
     """
@@ -69,10 +61,6 @@ class dGBDT(nn.Module):
             ]
         )
 
-        # Initialise to -3 so softplus(-3) ≈ 0.049 — small shrinkage per tree.
-        self.beta = nn.Parameter(torch.full((self.num_trees,), -3.0))
-        parametrize.register_parametrization(self, "beta", PositiveParam(eps=1e-6))
-
     def forward(self, x, is_training_data=False):
         tree_outputs = []
         penalties = []
@@ -85,9 +73,11 @@ class dGBDT(nn.Module):
                 out = tree(x, is_training_data=False)
             tree_outputs.append(out)
 
-        beta = self.beta.view(-1, 1, 1)
-        tree_probs = torch.stack([torch.sigmoid(o) for o in tree_outputs], dim=0)
-        ensemble_prob = torch.sum(beta * tree_probs, dim=0)
+        # Sum raw logits from each tree, then apply sigmoid for probability.
+        # This allows later trees to subtract from the cumulative prediction
+        # (fix the positivity trap from beta * sigmoid(logit) formulation).
+        ensemble_logit = sum(tree_outputs)          # unbounded real value
+        ensemble_prob  = torch.sigmoid(ensemble_logit)  # ∈ (0, 1)
 
         if is_training_data:
             return tree_outputs, penalties, ensemble_prob
@@ -117,7 +107,7 @@ def train_dgbdt_fold(
                        normalised by the caller.
     y_train / y_val : float32 binary label arrays of shape (N,).
 
-    Returns a dict with keys: model, auroc, auprc, train_losses, beta.
+    Returns a dict with keys: model, auroc, auprc, train_losses.
     """
     x_tr = torch.tensor(x_train, dtype=torch.float32)
     x_vl = torch.tensor(x_val,   dtype=torch.float32)
@@ -165,16 +155,18 @@ def train_dgbdt_fold(
             optimizer.zero_grad()
             tree_outputs, penalties, _ = model(xb, is_training_data=True)
 
-            # Stage-wise residual boosting against ground-truth labels only.
-            pred_so_far = torch.zeros_like(yb)
+            # Stage-wise residual boosting (Algorithm 2, TNT paper).
+            # pred_so_far accumulates raw logits; residual is computed in
+            # probability space: target_prob - sigmoid(cumulative_logit).
+            # This allows later trees to output negative values and correct
+            # over-predictions (fixes the positivity trap).
+            pred_so_far = torch.zeros_like(yb)  # raw logit accumulator
             total_loss = torch.tensor(0.0, device=device)
-            beta = model.beta
 
             for m in range(model.num_trees):
-                residual = yb - pred_so_far.detach()
-                tree_contribution = beta[m] * torch.sigmoid(tree_outputs[m])
-                total_loss = total_loss + mse(tree_contribution, residual) + penalties[m]
-                pred_so_far = pred_so_far + tree_contribution.detach()
+                residual = yb - torch.sigmoid(pred_so_far.detach())
+                total_loss = total_loss + mse(tree_outputs[m], residual) + penalties[m]
+                pred_so_far = pred_so_far + tree_outputs[m].detach()
 
             total_loss.backward()
             optimizer.step()
@@ -198,12 +190,10 @@ def train_dgbdt_fold(
                 
                 pred_so_far_v = torch.zeros_like(yb)
                 val_loss = torch.tensor(0.0, device=device)
-                beta_v = model.beta
                 for m in range(model.num_trees):
-                    residual_v = yb - pred_so_far_v
-                    tree_contribution_v = beta_v[m] * torch.sigmoid(tree_outputs_v[m])
-                    val_loss = val_loss + mse(tree_contribution_v, residual_v) + penalties_v[m]
-                    pred_so_far_v = pred_so_far_v + tree_contribution_v
+                    residual_v = yb - torch.sigmoid(pred_so_far_v)
+                    val_loss = val_loss + mse(tree_outputs_v[m], residual_v) + penalties_v[m]
+                    pred_so_far_v = pred_so_far_v + tree_outputs_v[m]
                 val_running_loss += val_loss.item() * xb.size(0)
         model.train()
 
@@ -252,7 +242,6 @@ def train_dgbdt_fold(
         "auroc":        auroc,
         "auprc":        auprc,
         "train_losses": epoch_losses,
-        "beta":         model.beta.detach().cpu().numpy(),
     }
 
 
