@@ -16,6 +16,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 from SDT import SDT
 from utils import seed_worker, set_seed
+import os
 
 # 22 clinical features × 48 hourly time-steps
 MIMIC_INPUT_DIM = 22 * 48  # 1056
