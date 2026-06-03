@@ -204,6 +204,10 @@ def run_distillation():
         # 6. Cross-Validation Evaluation
         # Restore the best checkpoint and use its metrics
         student.load_state_dict(best_state)
+        
+        os.makedirs('plots_distill', exist_ok=True)
+        torch.save(student.state_dict(), f'plots_distill/dgbdt_student_fold_{i}.pt')
+
         fold_auc = best_auc
         fold_prc = best_prc
         

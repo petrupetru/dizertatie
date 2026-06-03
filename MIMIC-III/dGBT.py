@@ -108,6 +108,8 @@ def train_dgbdt_fold(
     depth: int = 5,
     lamda: float = 1e-3,
     verbose: bool = True,
+    fold_idx: int = 0,
+    save_dir: str = "plots_dgbdt",
 ) -> dict:
     """Train dGBDT directly against ground-truth labels (no distillation).
 
@@ -150,6 +152,8 @@ def train_dgbdt_fold(
     mse = nn.MSELoss()
 
     epoch_losses = []
+    best_auroc = 0.0
+    best_state = None
     for epoch in range(1, num_epochs + 1):
         model.train()
         running_loss = 0.0
@@ -210,12 +214,22 @@ def train_dgbdt_fold(
         epoch_auroc = roc_auc_score(val_labels, val_probs)
         epoch_auprc = average_precision_score(val_labels, val_probs)
 
+        if epoch_auroc > best_auroc:
+            best_auroc = epoch_auroc
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+
         if verbose:
             print(
                 f"dGBDT Epoch [{epoch:3d}/{num_epochs}]  "
                 f"Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}  "
                 f"Val AUROC: {epoch_auroc:.4f}  Val AUPRC: {epoch_auprc:.4f}"
             )
+
+    if best_state:
+        model.load_state_dict(best_state)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save(model.state_dict(), os.path.join(save_dir, f"dgbdt_standalone_fold_{fold_idx}.pt"))
 
     model.eval()
     probs, labels = [], []
@@ -255,6 +269,7 @@ def train_kfold_dgbdt(
     lamda: float = 1e-3,
     seed: int = 42,
     verbose: bool = True,
+    save_dir: str = "plots_dgbdt",
 ) -> dict:
     """K-fold cross-validation for the standalone dGBDT on MIMIC-III.
 
@@ -293,6 +308,8 @@ def train_kfold_dgbdt(
             depth=depth,
             lamda=lamda,
             verbose=verbose,
+            fold_idx=fold,
+            save_dir=save_dir,
         )
         fold_results.append(result)
 
