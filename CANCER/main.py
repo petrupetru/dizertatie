@@ -14,7 +14,7 @@ from net import DNN, train_kfold as train_kfold_dnn
 from SDT import SDT
 from cancer_datasets import BreastCancerDataset
 
-MODEL = "TNT-soft_tree" # "XGBoost", "dnn", "soft_tree", "tn_dnn",  "DNN-dGBDT", "TNT-soft_tree", "TNT-dgbdt"or "all"
+MODEL = "TNT-dgbdt" # "XGBoost", "dnn", "soft_tree", "tn_dnn",  "DNN-dGBDT", "TNT-soft_tree", "TNT-dgbdt"or "all"
 
 def evaluate_gbdt_kfold(df, n_splits=5, num_trees=80, max_depth=9, verbose=False):
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)

@@ -5,7 +5,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, regularizers, optimizers, Model
 from tensorflow.keras.layers import (Input, Activation, BatchNormalization, Flatten, 
                                      Conv2D, AveragePooling2D, Dropout, Reshape, Dense)
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
 
@@ -150,16 +150,17 @@ def run_cv():
         )
 
         ckpt_path = f'models/tnt/fold{i}_best.keras'
-        ckpt = ModelCheckpoint(ckpt_path, monitor='val_auprc', save_best_only=True, mode='max')
-        early_stop = EarlyStopping(monitor='val_auprc', patience=12, restore_best_weights=True, mode='max')
+        ckpt = ModelCheckpoint(ckpt_path, monitor='val_auroc', save_best_only=True, mode='max')
+        early_stop = EarlyStopping(monitor='val_auroc', patience=10, restore_best_weights=True, mode='max')
+        reduce_lr = ReduceLROnPlateau(monitor='val_auroc', factor=0.5, patience=5, mode='max', verbose=1)
         
         model.fit(
             L_tr, y[train_idx], 
-            epochs=50, 
+            epochs=100, 
             batch_size=256,
             class_weight={0: 1, 1: 10},
             validation_data=(L_vl, y[val_idx]),
-            callbacks=[ckpt, early_stop],
+            callbacks=[ckpt, early_stop, reduce_lr],
             verbose=1
         )
 
