@@ -9,12 +9,13 @@ from sklearn.preprocessing import StandardScaler
 import numpy as np
 import xgboost as xgb
 
-from constants import SEED, FEATURE_NAMES, LABEL_NAME
+from constants import SEED, FEATURE_NAMES, LABEL_NAME, COLUMN_NAMES
 from SDT import SDT
 from utils import seed_worker, set_seed
-from cancer_datasets import TreeEmbedDataset
+from cancer_datasets import TreeEmbedDataset, BreastCancerDataset
 from tree_embeddings import train_xgb
 from TN_net import train, test
+from net import DNN
 
 
 class PositiveParam(nn.Module):
@@ -38,7 +39,7 @@ class dGBDT(nn.Module):
         self,
         input_dim,
         num_trees=5,
-        tree_depth=3,
+        tree_depth=5,
         lamda=1e-3,
         use_cuda=False,
     ):
@@ -113,6 +114,7 @@ def distill_dgbdt_fold(
     depth=5,
     lamda=1e-3,
     verbose=True,
+    teacher_type="tn_dnn",
 ):
     """Train dGBDT student from teacher soft labels for one CV fold.
 
@@ -128,8 +130,14 @@ def distill_dgbdt_fold(
 
     teacher_model.eval()
     with torch.no_grad():
-        x_teacher_train = torch.tensor(leaf_indices_train, dtype=torch.long, device=device)
-        x_teacher_val = torch.tensor(leaf_indices_val, dtype=torch.long, device=device)
+        if teacher_type == "tn_dnn":
+            x_teacher_train = torch.tensor(leaf_indices_train, dtype=torch.long, device=device)
+            x_teacher_val = torch.tensor(leaf_indices_val, dtype=torch.long, device=device)
+        else:
+            # For standard DNN teacher, we use the scaled features. We fill NaNs with 0 (mean) because the DNN cannot handle them.
+            x_teacher_train = torch.tensor(fold_train_df[FEATURE_NAMES].fillna(0).values, dtype=torch.float32, device=device)
+            x_teacher_val = torch.tensor(fold_val_df[FEATURE_NAMES].fillna(0).values, dtype=torch.float32, device=device)
+
         # t^i in the paper: plain teacher probability, no temperature softening.
         y_teacher_train = teacher_model(x_teacher_train).cpu()
         y_teacher_val = teacher_model(x_teacher_val).cpu()
@@ -437,3 +445,82 @@ def train_kfold_tnt_dgbdt(
         print(f"{'='*50}")
 
     return results
+
+def train_kfold_dnn_dgbdt(
+    df,
+    n_splits=5,
+    num_epochs_teacher=25,
+    num_epochs_dgbdt=35,
+    lr=1e-3,
+    lr_dgbdt=1e-3,
+    batch_size=32,
+    device="cpu",
+    alpha=0.5,
+    temperature=1.0,
+    dgbdt_num_trees=5,
+    dgbdt_depth=5,
+    dgbdt_lamda=1e-3,
+    verbose=True,
+):
+    """Run distillation from a standard DNN teacher to a dGBDT student."""
+    set_seed(SEED)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=SEED)
+    labels = df[LABEL_NAME].values
+
+    fold_teacher_aurocs, fold_teacher_auprcs = [], []
+    fold_dgbdt_aurocs, fold_dgbdt_auprcs = [], []
+
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df, labels), start=1):
+        if verbose:
+            print(f"\n{'='*50}\n  Fold {fold}/{n_splits} (DNN -> dGBDT)\n{'='*50}")
+
+        fold_train_df = df.iloc[train_idx].copy()
+        fold_val_df   = df.iloc[val_idx].copy()
+
+        # 1. Teacher Setup (Impute + Scale)
+        train_means = fold_train_df[FEATURE_NAMES].mean()
+        df_teacher_train = fold_train_df.copy()
+        df_teacher_val   = fold_val_df.copy()
+        df_teacher_train[FEATURE_NAMES] = df_teacher_train[FEATURE_NAMES].fillna(train_means)
+        df_teacher_val[FEATURE_NAMES]   = df_teacher_val[FEATURE_NAMES].fillna(train_means)
+
+        scaler = StandardScaler()
+        df_teacher_train[FEATURE_NAMES] = scaler.fit_transform(df_teacher_train[FEATURE_NAMES])
+        df_teacher_val[FEATURE_NAMES]   = scaler.transform(df_teacher_val[FEATURE_NAMES])
+
+        teacher_model = DNN().to(device)
+        train_ds_t = BreastCancerDataset(df_teacher_train)
+        val_ds_t   = BreastCancerDataset(df_teacher_val)
+        g = torch.Generator(); g.manual_seed(SEED + fold)
+        train_loader_t = DataLoader(train_ds_t, batch_size=batch_size, shuffle=True, generator=g, worker_init_fn=seed_worker)
+        val_loader_t   = DataLoader(val_ds_t, batch_size=batch_size, shuffle=False, generator=g, worker_init_fn=seed_worker)
+
+        train(teacher_model, train_loader_t, val_loader_t, num_epochs=num_epochs_teacher, lr=lr, device=device, verbose=verbose)
+        teacher_metrics = test(teacher_model, val_loader_t, device=device, verbose=verbose)
+        fold_teacher_aurocs.append(teacher_metrics["auroc"])
+        fold_teacher_auprcs.append(teacher_metrics["auprc"])
+
+        # 2. Student Distillation (preserving sparse features for the student part)
+        df_student_train = fold_train_df.copy()
+        df_student_val   = fold_val_df.copy()
+        df_student_train[FEATURE_NAMES] = scaler.transform(df_student_train[FEATURE_NAMES])
+        df_student_val[FEATURE_NAMES]   = scaler.transform(df_student_val[FEATURE_NAMES])
+
+        dgbdt_metrics = distill_dgbdt_fold(
+            teacher_model=teacher_model,
+            leaf_indices_train=None, leaf_indices_val=None,
+            fold_train_df=df_student_train, fold_val_df=df_student_val,
+            labels_train=np.where(fold_train_df[LABEL_NAME].values == "M", 1, 0),
+            labels_val=np.where(fold_val_df[LABEL_NAME].values == "M", 1, 0),
+            device=device, batch_size=batch_size, num_epochs=num_epochs_dgbdt, lr=lr_dgbdt,
+            seed=SEED+1000+fold, alpha=alpha, temperature=temperature,
+            num_trees=dgbdt_num_trees, depth=dgbdt_depth, lamda=dgbdt_lamda, verbose=verbose,
+            teacher_type="dnn"
+        )
+        fold_dgbdt_aurocs.append(dgbdt_metrics["auroc"])
+        fold_dgbdt_auprcs.append(dgbdt_metrics["auprc"])
+
+    return {"mean_teacher_auroc": np.mean(fold_teacher_aurocs), "std_teacher_auroc": np.std(fold_teacher_aurocs),
+            "mean_dgbdt_auroc": np.mean(fold_dgbdt_aurocs), "std_dgbdt_auroc": np.std(fold_dgbdt_aurocs),
+            "mean_teacher_auprc": np.mean(fold_teacher_auprcs), "std_teacher_auprc": np.std(fold_teacher_auprcs),
+            "mean_dgbdt_auprc": np.mean(fold_dgbdt_auprcs), "std_dgbdt_auprc": np.std(fold_dgbdt_auprcs)}
