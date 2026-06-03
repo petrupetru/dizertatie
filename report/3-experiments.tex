@@ -57,8 +57,24 @@ Tree models are more than capable to handle missing data so variations of the ex
 
 For each sparsity level I tested multiple tree-based, DNN and Tree-NN fusions to see if the distillation has any real advantages over the normal models. For this dataset, the results were not very conclusive because all models performed really well.
 
-
-
-
+\begin{table}[htbp]
+\centering
+\renewcommand{\arraystretch}{1.5}
+% Adjust 0.9 below to make it wider or narrower
+\resizebox{0.9\textwidth}{!}{%
+\begin{tabular}{|l|l|l|l|l|l|l|l|}
+\hline
+\multicolumn{2}{|l|}{\multirow{2}{*}{Methods}} & \multicolumn{2}{l|}{Cancer(0\% sparse)} & \multicolumn{2}{l|}{Cancer(20\% sparse)} & \multicolumn{2}{l|}{Cancer(40\% sparse)} \\ \cline{3-8} 
+\multicolumn{2}{|l|}{} & AUROC & AUPRC & AUROC & AUPRC & AUROC & AUPRC \\ \hline
+\multirow{2}{*}{T} & GBDT & 0.9791 & 0.9667 & 0.9741 & 0.9611 & 0.9762 & 0.9712 \\ \cline{2-8} 
+ & SDT & 0.9675 & 0.9659 & 0.9071 & 0.9024 & 0.8188 & 0.7980 \\ \hline
+N & DNN & 0.9587 & 0.9503 & 0.8737 & 0.8131 & 0.8324 & 0.7828 \\ \hline
+\multirow{2}{*}{T \& N} & GBDT-DNN & 0.9893 & 0.9846 & 0.9856 & 0.9813 & 0.9811 & 0.9755 \\ \cline{2-8} 
+ & DNN-dGBDT & 0.9955 & 0.9943 & 0.9910 & 0.9886 & 0.9921 & 0.9889 \\ \hline
+\multirow{2}{*}{TNT} & GBDT-DNN-SDT & 0.9927 & 0.9909 & 0.9920 & 0.9789 & 0.9900 & 0.9857 \\ \cline{2-8} 
+ & GBDT-DNN-dGBDT & 0.9949 & 0.9939 & 0.9912 & 0.9884 & 0.9910 & 0.9874 \\ \hline
+\end{tabular}%
+}
+\end{table}
 
 \section{Results}
