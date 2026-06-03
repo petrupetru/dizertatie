@@ -13,7 +13,7 @@ from preprocess import build_dataset
 from tnt_layers import TreeEmbeddingLayer
 from main import cross_validation_plot_roc, plot_confusion
 
-def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=4, l2_penalty=0.01):
+def create_tnt_convnet(num_trees, max_leaves_per_tree, embedding_dim=4, l2_penalty=0.1):
     """
     Hybrid TNT-ConvNet architecture.
     Input: Leaf indices for 48 hours.
@@ -72,12 +72,12 @@ def train_xgb_teacher(X_raw, y):
     
     dtrain = xgb.DMatrix(X_flat, label=y_flat)
     params = {
-        'max_depth': 6,
+        'max_depth': 3,
         'objective': 'binary:logistic',
         'seed': 42,
         'verbosity': 0
     }
-    bst = xgb.train(params, dtrain, num_boost_round=80)
+    bst = xgb.train(params, dtrain, num_boost_round=60)
     return bst
 
 def get_leaf_indices(bst, X_raw):
@@ -156,7 +156,7 @@ def run_cv():
         model.fit(
             L_tr, y[train_idx], 
             epochs=50, 
-            batch_size=32,
+            batch_size=256,
             class_weight={0: 1, 1: 10},
             validation_data=(L_vl, y[val_idx]),
             callbacks=[ckpt, early_stop],

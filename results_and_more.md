@@ -22,3 +22,15 @@ The `SDT` penalty calculation was transitioned to a vectorized implementation. T
 
 ### 3. Sparsity-Aware Routing
 To successfully distill knowledge from an XGBoost teacher (which handles sparsity natively), the student SDTs utilize a dual-input strategy of zero-imputation combined with a concatenated binary missingness mask. This allows the network to learn "default directions" for missing values.
+
+
+
+main.py - iseeu model 
+main_tnt.py - with same dataset
+we don't need imputation anymore
+main_tnt.py - with sparse dataset (not so good)
+
+de incercat:
+    summary features in the dGBDT model
+
+

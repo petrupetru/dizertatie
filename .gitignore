@@ -8,3 +8,7 @@ papers
 saved_models
 plots
 plots_colab
+report/*
+!report/*tex
+!report/*bib
+!report/images

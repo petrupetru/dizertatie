@@ -85,7 +85,8 @@ def run_distillation():
         )
         val_ds = TensorDataset(
             torch.tensor(X_vl_student, dtype=torch.float32),
-            torch.tensor(y[val_idx], dtype=torch.float32).unsqueeze(1)
+            torch.tensor(y[val_idx], dtype=torch.float32).unsqueeze(1),
+            torch.tensor(y_teacher_vl, dtype=torch.float32).unsqueeze(1)
         )
         
         train_loader = DataLoader(train_ds, batch_size=128, shuffle=True, worker_init_fn=seed_worker)
@@ -101,13 +102,20 @@ def run_distillation():
         ).to(device)
         
         optimizer = optim.Adam(student.parameters(), lr=1e-3)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=5, factor=0.5)
         mse = nn.MSELoss()
         
         alpha = 0.5  # Distillation mixing parameter
         temp  = 1.0  # Temperature softening (standard for probability-based distillation)
+
+        best_auc = 0.0
+        best_prc = 0.0
+        best_state = None
+        patience = 10
+        epochs_no_improve = 0
         
         print("Training student dGBDT...")
-        for epoch in range(1, 51):
+        for epoch in range(1, 101):
             student.train()
             running_loss = 0.0
             for xb, yb, ytb in train_loader:
@@ -145,23 +153,25 @@ def run_distillation():
 
             # --- Validation Phase ---
             student.eval()
-            val_running_loss = 0.0
             val_probs, val_labels = [], []
+            val_running_loss = 0.0
             with torch.no_grad():
-                for vxb, vyb in val_loader:
-                    vxb, vyb = vxb.to(device), vyb.to(device)
+                for vxb, vyb, vytb in val_loader:
+                    vxb, vyb, vytb = vxb.to(device), vyb.to(device), vytb.to(device)
                     v_tree_outputs, v_penalties, v_ensemble_prob = student(vxb, is_training_data=True)
-                    
                     val_probs.append(v_ensemble_prob.cpu())
                     val_labels.append(vyb.cpu())
-                    
+
                     v_pred_so_far = torch.zeros_like(vyb)
                     v_total_loss = torch.tensor(0.0, device=device)
-                    for m in range(student.num_trees):
-                        v_residual = vyb - v_pred_so_far
-                        v_tree_contribution = student.beta[m] * torch.sigmoid(v_tree_outputs[m])
-                        v_total_loss += mse(v_tree_contribution, v_residual) + v_penalties[m]
-                        v_pred_so_far += v_tree_contribution
+                    for m_idx in range(student.num_trees):
+                        v_residual = (
+                            alpha * (temp**2) * (vytb - v_pred_so_far) +
+                            (1.0 - alpha) * (vyb - v_pred_so_far)
+                        )
+                        v_contribution = student.beta[m_idx] * torch.sigmoid(v_tree_outputs[m_idx])
+                        v_total_loss += mse(v_contribution, v_residual) + v_penalties[m_idx]
+                        v_pred_so_far = v_pred_so_far + v_contribution
                     val_running_loss += v_total_loss.item() * vxb.size(0)
             
             avg_val_loss = val_running_loss / len(val_idx)
@@ -170,16 +180,32 @@ def run_distillation():
             epoch_auc = roc_auc_score(val_labels_cat, val_probs_cat)
             epoch_prc = average_precision_score(val_labels_cat, val_probs_cat)
 
+            scheduler.step(epoch_auc)
+
+            if epoch_auc > best_auc:
+                best_auc = epoch_auc
+                best_prc = epoch_prc
+                best_state = {k: v.clone() for k, v in student.state_dict().items()}
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+
             print(
-                f"  Epoch [{epoch:3d}/50]  "
+                f"  Epoch [{epoch:3d}/100]  "
                 f"Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}  "
                 f"Val AUROC: {epoch_auc:.4f}  Val AUPRC: {epoch_prc:.4f}"
+                + ("  *" if epochs_no_improve == 0 else "")
             )
 
+            if epochs_no_improve >= patience:
+                print(f"  Early stopping at epoch {epoch}.")
+                break
+
         # 6. Cross-Validation Evaluation
-        # Use the metrics calculated in the final epoch's validation phase
-        fold_auc = epoch_auc
-        fold_prc = epoch_prc
+        # Restore the best checkpoint and use its metrics
+        student.load_state_dict(best_state)
+        fold_auc = best_auc
+        fold_prc = best_prc
         
         print(f"\nFold {i} Final Result -> AUROC: {fold_auc:.4f}, AUPRC: {fold_prc:.4f}")
         all_aurocs.append(fold_auc)
