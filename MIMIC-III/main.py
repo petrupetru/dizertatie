@@ -148,7 +148,7 @@ def train():
         fold_mean.append(m)
         fold_std.append(s)
 
-    os.makedirs('plots', exist_ok=True)
+    os.makedirs('models/iseeu', exist_ok=True)
 
     predictions, ground_truth, fold_history = [], [], []
 
@@ -175,14 +175,14 @@ def train():
         Xtr = np.nan_to_num((X[train_idx] - fold_mean[i]) / (fold_std[i] + 1e-8))
         Xvl = np.nan_to_num((X[val_idx]   - fold_mean[i]) / (fold_std[i] + 1e-8))
 
-        ckpt = ModelCheckpoint(f'plots/kfold{i}_best.keras', monitor='val_loss', save_best_only=True)
+        ckpt = ModelCheckpoint(f'models/iseeu/kfold{i}_best.keras', monitor='val_loss', save_best_only=True)
         hist = model.fit(Xtr, y[train_idx], epochs=epochs, batch_size=batch_size,
                          class_weight=class_weight, callbacks=[ckpt],
                          validation_data=(Xvl, y[val_idx]), verbose=1)
         fold_history.append(hist)
 
         from tensorflow.keras.models import load_model
-        model = load_model(f'plots/kfold{i}_best.keras')
+        model = load_model(f'models/iseeu/kfold{i}_best.keras')
         predictions.append(model.predict(Xvl, verbose=1))
 
     # ── plots ─────────────────────────────────────────────────────────────────
@@ -196,15 +196,15 @@ def train():
         ax.set_title(f'Fold {k} (best={h.history["val_loss"][j]:.3f}, epoch {j})')
         ax.set_xlabel('epoch'); ax.set_ylabel('loss'); ax.legend()
     plt.tight_layout()
-    plt.savefig('plots/loss_history.png', dpi=150)
+    plt.savefig('models/iseeu/loss_history.png', dpi=150)
     plt.close()
 
     cross_validation_plot_roc(ground_truth, predictions,
                               'Receiver operating characteristic curve',
-                              filename='plots/roc_curve_validation.png')
-    plot_confusion(ground_truth, predictions, filename='plots/confusion_matrix.png')
+                              filename='models/iseeu/roc_curve_validation.png')
+    plot_confusion(ground_truth, predictions, filename='models/iseeu/confusion_matrix.png')
 
-    print("\nSaved plots to plots/")
+    print("\nSaved models and plots to models/iseeu/")
 
 
 if __name__ == '__main__':

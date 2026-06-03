@@ -100,7 +100,7 @@ def run_cv():
     cv_idx = list(cv.split(X=np.zeros(n_patients), y=y))
 
     predictions, ground_truth, fold_aurocs, fold_auprcs = [], [], [], []
-    os.makedirs('plots_tnt', exist_ok=True)
+    os.makedirs('models/tnt', exist_ok=True)
 
     for i, (train_idx, val_idx) in enumerate(cv_idx):
         print(f"\n--- Fold {i} ---")
@@ -112,8 +112,8 @@ def run_cv():
         s = np.nanstd(X_train_raw, axis=(0, 2), keepdims=True)
 
         # Save normalization parameters for later inference/distillation
-        np.save(f'plots_tnt/fold{i}_mean.npy', m)
-        np.save(f'plots_tnt/fold{i}_std.npy', s)
+        np.save(f'models/tnt/fold{i}_mean.npy', m)
+        np.save(f'models/tnt/fold{i}_std.npy', s)
 
         X_tr_norm = np.nan_to_num((X_train_raw - m) / (s + 1e-8))
         X_vl_norm = np.nan_to_num((X_val_raw - m) / (s + 1e-8))
@@ -121,7 +121,7 @@ def run_cv():
         # 1. XGBoost Feature Engineering
         print("Training XGBoost teacher...")
         bst = train_xgb_teacher(X_tr_norm, y[train_idx])
-        bst.save_model(f'plots_tnt/fold{i}_xgb_teacher.json')
+        bst.save_model(f'models/tnt/fold{i}_xgb_teacher.json')
         
         # 2. Extract Leaf Sequences
         print("Generating leaf indices...")
@@ -149,7 +149,7 @@ def run_cv():
                      tf.keras.metrics.AUC(name='auprc', curve='PR')]
         )
 
-        ckpt_path = f'plots_tnt/fold{i}_best.keras'
+        ckpt_path = f'models/tnt/fold{i}_best.keras'
         ckpt = ModelCheckpoint(ckpt_path, monitor='val_auprc', save_best_only=True, mode='max')
         early_stop = EarlyStopping(monitor='val_auprc', patience=12, restore_best_weights=True, mode='max')
         
@@ -182,9 +182,9 @@ def run_cv():
     cross_validation_plot_roc(
         ground_truth, predictions, 
         'TNT-ConvNet MIMIC-III Mortality Prediction ROC', 
-        filename='plots_tnt/roc_tnt.png'
+        filename='models/tnt/roc_tnt.png'
     )
-    plot_confusion(ground_truth, predictions, filename='plots_tnt/cm_tnt.png')
+    plot_confusion(ground_truth, predictions, filename='models/tnt/cm_tnt.png')
 
 if __name__ == '__main__':
     run_cv()
