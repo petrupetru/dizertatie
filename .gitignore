@@ -13,3 +13,4 @@ report/*
 !report/*bib
 !report/images
 MIMIC-III/models
+models

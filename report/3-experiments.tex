@@ -1,8 +1,8 @@
 \chapter{Experiments}
 \section{Implementation}
-I used the PyTorch framework to implement the Distillable Gradient Boosting Decision Trees architecture and a Multilayer Perceptron that serves as the DNN. For the tree embeddings I used XGBoost. After training the tree ensemble on the current fold, each sample is passed through and each tree outputs a leaf index. All leaf indices are One-Hot Encoded and sent to the DNN. The DNN takes the tree embeddings as input, concatenates them in groups and uses one Embedding layer per group to reduce the dimensionality of the input. The rest of the DNN is kept intact and just the input dimension is modified. 
+I used the PyTorch framework to implement the Distillable Gradient Boosting Decision Trees architecture and a Multilayer Perceptron that serves as the DNN. For the tree embeddings I used XGBoost. After training the tree ensemble on the current fold, each sample is passed through and each tree outputs a leaf index. All leaf indices are One-Hot Encoded and sent to the DNN. The DNN takes the tree embeddings as input, concatenates them in groups and uses one Embedding layer per group to reduce the dimensionality of the input. The rest of the DNN is kept intact and just the input dimension is modified.
 
-For the Soft Decision Tree I adapted a public implementation from github \footnote{https://github.com/xuyxu/Soft-Decision-Tree} of the Nicholas Frosst and Geoffrey Hinton SDT to my needs. More specifically, I solved nan handling by adding a mask for the missing values and imputed them as 0. This way, when a value is missing, its weight it’s ignored because the nan was converted to 0, but the mask is 1 so a different weight for missing features gets activated and the model learns a weight for a default direction when the feature is missing, simulating the default direction that XGBoost learns for handling sparse data. 
+For the Soft Decision Tree I adapted a public implementation from github \footnote{https://github.com/xuyxu/Soft-Decision-Tree} of the Nicholas Frosst and Geoffrey Hinton SDT to my needs. More specifically, I solved nan handling by adding a mask for the missing values and imputed them as 0. This way, when a value is missing, its weight it’s ignored because the nan was converted to 0, but the mask is 1 so a different weight for missing features gets activated and the model learns a weight for a default direction when the feature is missing, simulating the default direction that XGBoost learns for handling sparse data.
 
 The Distillable Gradient Boosting Decision Tree is an ensemble of Soft Trees that are linked together in a boosting manner, meaning that each tree is minimizing the residual error from the previous tree. As we iterate through the trees we store what is the sum of the previous trees so far to compute the residual that the current tree needs to estimate. The sum is detached from the PyTorch autograd, so the current iteration does not update the weights of the previous trees too. The Mean Squared Error between the current tree prediction and the residual is the tree loss, and the sum of all tree losses is the model target.
 
@@ -10,7 +10,7 @@ The training is done using a Stratified 5-fold split on the dataset, with early 
 
 \subsection{Evaluation Metrics}
 
-To evaluate the predictive performance of our models, I tracked two primary metrics: AUROC (Area Under the Receiver Operating Characteristic curve) and AUPRC (Area Under the Precision-Recall Curve). Both metrics assess model performance across a continuous range of classification thresholds, providing a more comprehensive evaluation than a single arbitrary cutoff point. 
+To evaluate the predictive performance of our models, I tracked two primary metrics: AUROC (Area Under the Receiver Operating Characteristic curve) and AUPRC (Area Under the Precision-Recall Curve). Both metrics assess model performance across a continuous range of classification thresholds, providing a more comprehensive evaluation than a single arbitrary cutoff point.
 
 These metrics are derived from the standard components of a confusion matrix: True Positives ($\mathrm{TP}$), False Positives ($\mathrm{FP}$), True Negatives ($\mathrm{TN}$), and False Negatives ($\mathrm{FN}$).
 
@@ -18,28 +18,28 @@ AUROC measures the model's ability to distinguish between the two classes. It is
 
 The formulas for these rates are:
 \begin{equation}
-\mathrm{TPR}(t) = \mathrm{Recall}(t) = \frac{\mathrm{TP}(t)}{\mathrm{TP}(t) + \mathrm{FN}(t)}
+    \mathrm{TPR}(t) = \mathrm{Recall}(t) = \frac{\mathrm{TP}(t)}{\mathrm{TP}(t) + \mathrm{FN}(t)}
 \end{equation}
 
 \begin{equation}
-\mathrm{FPR}(t) = \frac{\mathrm{FP}(t)}{\mathrm{FP}(t) + \mathrm{TN}(t)}
+    \mathrm{FPR}(t) = \frac{\mathrm{FP}(t)}{\mathrm{FP}(t) + \mathrm{TN}(t)}
 \end{equation}
 
 The AUROC score represents the total area under this curve, calculated mathematically as an integral with respect to the False Positive Rate ($f$):
 \begin{equation}
-\mathrm{AUROC} = \int_{0}^{1} \mathrm{TPR}(f) \, df
+    \mathrm{AUROC} = \int_{0}^{1} \mathrm{TPR}(f) \, df
 \end{equation}
 
-While AUROC is a standard metric, it can present an overly optimistic view of performance in highly imbalanced datasets (e.g., when benign cases significantly outnumber malignant ones). To account for this, I also used AUPRC, which plots Precision against Recall across varying thresholds. 
+While AUROC is a standard metric, it can present an overly optimistic view of performance in highly imbalanced datasets (e.g., when benign cases significantly outnumber malignant ones). To account for this, I also used AUPRC, which plots Precision against Recall across varying thresholds.
 
 Precision denotes the proportion of positive predictions that were actually positive, while Recall represents the proportion of actual positive cases successfully identified by the model:
 \begin{equation}
-\mathrm{Precision}(t) = \frac{\mathrm{TP}(t)}{\mathrm{TP}(t) + \mathrm{FP}(t)}
+    \mathrm{Precision}(t) = \frac{\mathrm{TP}(t)}{\mathrm{TP}(t) + \mathrm{FP}(t)}
 \end{equation}
 
 The continuous formula for the area under the Precision-Recall curve integrates Precision over the change in Recall ($R$):
 \begin{equation}
-\mathrm{AUPRC} = \int_{0}^{1} \mathrm{Precision}(R) \, dR
+    \mathrm{AUPRC} = \int_{0}^{1} \mathrm{Precision}(R) \, dR
 \end{equation}
 
 For both metrics the value is between 0 and 1, and bigger is better.
@@ -50,31 +50,100 @@ For both metrics the value is between 0 and 1, and bigger is better.
 \end{equation}
 
 \subsection{Proof of Concept}
-First experiment was conducted using the \textbf{UCI Wisconsin breast cancer} dataset, where the columns are 30 numerical features that describe the characteristics of a tumor and the label is the binary diagnosis, malign or benign. The features describe the following 10 measurements in three dimensions: \textit{radius, texture, perimeter, area, smoothness, compactness, concavity, concave points, symmetry, fractal dimension.} 
+First experiment was conducted using the \textbf{UCI Wisconsin breast cancer} dataset, where the columns are 30 numerical features that describe the characteristics of a tumor and the label is the binary diagnosis, malign or benign. The features describe the following 10 measurements in three dimensions: \textit{radius, texture, perimeter, area, smoothness, compactness, concavity, concave points, symmetry, fractal dimension.}
 The dataset has only 569 samples (357 benign and 212 malign) and has no missing values, so it is really easy to use and fast to run models over it. It was chosen just to test the architecture and prove that it works.
 
 Tree models are more than capable to handle missing data so variations of the experiment where random features were removed from samples were tested. First 20\% of the values were removed and then 40\% to see how the model performs with sparse data.
 
-For each sparsity level I tested multiple tree-based, DNN and Tree-NN fusions to see if the distillation has any real advantages over the normal models. For this dataset, the results were not very conclusive because all models performed really well.
+For each sparsity level I tested multiple tree-based, DNN and Tree-NN fusions to see if the distillation has any real advantages over the normal models. For this dataset, the results were not very conclusive because most models performed really well. In Table \ref{cancer_table} we can see that all models that used some kind of tree ensamble acheived AUROC and AUPRC close to $0.99$
 
 \begin{table}[htbp]
-\centering
-\renewcommand{\arraystretch}{1.5}
-% Adjust 0.9 below to make it wider or narrower
-\resizebox{0.9\textwidth}{!}{%
-\begin{tabular}{|l|l|l|l|l|l|l|l|}
-\hline
-\multicolumn{2}{|l|}{\multirow{2}{*}{Methods}} & \multicolumn{2}{l|}{Cancer(0\% sparse)} & \multicolumn{2}{l|}{Cancer(20\% sparse)} & \multicolumn{2}{l|}{Cancer(40\% sparse)} \\ \cline{3-8} 
-\multicolumn{2}{|l|}{} & AUROC & AUPRC & AUROC & AUPRC & AUROC & AUPRC \\ \hline
-\multirow{2}{*}{T} & GBDT & 0.9791 & 0.9667 & 0.9741 & 0.9611 & 0.9762 & 0.9712 \\ \cline{2-8} 
- & SDT & 0.9675 & 0.9659 & 0.9071 & 0.9024 & 0.8188 & 0.7980 \\ \hline
-N & DNN & 0.9587 & 0.9503 & 0.8737 & 0.8131 & 0.8324 & 0.7828 \\ \hline
-\multirow{2}{*}{T \& N} & GBDT-DNN & 0.9893 & 0.9846 & 0.9856 & 0.9813 & 0.9811 & 0.9755 \\ \cline{2-8} 
- & DNN-dGBDT & 0.9955 & 0.9943 & 0.9910 & 0.9886 & 0.9921 & 0.9889 \\ \hline
-\multirow{2}{*}{TNT} & GBDT-DNN-SDT & 0.9927 & 0.9909 & 0.9920 & 0.9789 & 0.9900 & 0.9857 \\ \cline{2-8} 
- & GBDT-DNN-dGBDT & 0.9949 & 0.9939 & 0.9912 & 0.9884 & 0.9910 & 0.9874 \\ \hline
-\end{tabular}%
-}
+    \centering
+    \renewcommand{\arraystretch}{1.5}
+    % Adjust 0.9 below to make it wider or narrower
+    \resizebox{0.9\textwidth}{!}{%
+        \begin{tabular}{|l|l|l|l|l|l|l|l|}
+            \hline
+            \multicolumn{2}{|l|}{\multirow{2}{*}{Methods}} & \multicolumn{2}{l|}{Cancer(0\% sparse)} & \multicolumn{2}{l|}{Cancer(20\% sparse)} & \multicolumn{2}{l|}{Cancer(40\% sparse)}                                     \\ \cline{3-8}
+            \multicolumn{2}{|l|}{}                         & AUROC                                   & AUPRC                                    & AUROC                                    & AUPRC  & AUROC  & AUPRC           \\ \hline
+            \multirow{2}{*}{T}                             & GBDT                                    & 0.9791                                   & 0.9667                                   & 0.9741 & 0.9611 & 0.9762 & 0.9712 \\ \cline{2-8}
+                                                           & SDT                                     & 0.9675                                   & 0.9659                                   & 0.9071 & 0.9024 & 0.8188 & 0.7980 \\ \hline
+            N                                              & DNN                                     & 0.9587                                   & 0.9503                                   & 0.8737 & 0.8131 & 0.8324 & 0.7828 \\ \hline
+            \multirow{2}{*}{T \& N}                        & GBDT-DNN                                & 0.9893                                   & 0.9846                                   & 0.9856 & 0.9813 & 0.9811 & 0.9755 \\ \cline{2-8}
+                                                           & DNN-dGBDT                               & 0.9955                                   & 0.9943                                   & 0.9910 & 0.9886 & 0.9921 & 0.9889 \\ \hline
+            \multirow{2}{*}{TNT}                           & GBDT-DNN-SDT                            & 0.9927                                   & 0.9909                                   & 0.9920 & 0.9789 & 0.9900 & 0.9857 \\ \cline{2-8}
+                                                           & GBDT-DNN-dGBDT                          & 0.9949                                   & 0.9939                                   & 0.9912 & 0.9884 & 0.9910 & 0.9874 \\ \hline
+        \end{tabular}%
+    }
+    \caption{Results for the UCI Wisconsin breast cancer dataset with different models}
+    \label{cancer_table}
 \end{table}
 
-\section{Results}
+\subsection{Validating on a complex dataset}
+Moving further, I used the \textbf{MIMIC-III}\cite{johnson2016mimic} database that contains clinical information about adult patients and their hospital admissions, such as demographics, vital signs, laboratory measurements, survival data and other medical data. This database is very popular because it is the first publicly available option for such a huge amount of clinical data. It consists of over 50 thousands admissions to critical care units for 38 thousands distinct patients. It became the benchmark in the machine learning in healthcare, for the task of predicting the Intensive Care Unit mortality risk.
+Because MIMIC-III reflects actual, complex intensive care environments, the data is inherently noisy and often contains low-frequency or missing values. In critical care, the interpretability of a decision is just as vital as its accuracy. MIMIC-III provides a rigorous environment to demonstrate how the TNT framework can leverage tree models to handle low-quality input data, utilize deep neural networks (DNNs) for high predictive performance, and ultimately use knowledge distillation to provide the transparent, explainable decision paths required in high-stakes medical settings.
+
+\subsubsection{Cohort Selection}
+To ensure a robust and reproducible approach, the data preprocessing and imputation pipeline for this study uses the methodology established by Caicedo-Torres and Gutierrez\cite{caicedo2019iseeu}. Data was filtered to only include patients older than 16 years at the time of admission, with the length of stay exceeding 48 hours. To maintain the statistical independence of the dataset instances, only the first ICU admission was considered for patients with multiple admissions.
+
+\subsubsection{Feature Extraction}
+For each patient, a comprehensive set of 22 clinical variables was extracted spanning the first 48 hours of their ICU stay. These features roughly correspond to the parameters used in the Simplified Acute Physiology Score II (SAPS-II), with several key modifications to optimize the data for machine learning.
+\begin{itemize}
+    \item Categorical SAPS-II concepts, such as the "type of admission" and "chronic disease," were decomposed into individual binary indicator variables (e.g., surgical admission, elective admission, presence of AIDS, metastatic cancer).
+    \item The Glasgow Coma Scale (GCS) was separated into its three distinct physiological components (eyes, motor, and verbal) rather than using a single aggregated score.
+    \item Measurements for $PO_{2}$ and $FiO_{2}$ were included as distinct, separate inputs rather than using their quotient.
+    \item Diastolic blood pressure was also added to the feature set to provide a more comprehensive physiological profile.
+\end{itemize}
+
+The final list of 22 features:
+\begin{itemize}
+    \item \textbf{Static and Demographic Features:} Baseline risk profile upon admission.
+          \begin{itemize}
+              \item \textit{Age:} Patient's baseline physiological reserve and recovery capacity.
+              \item \textit{Elective admission:} Indicator specifying if the ICU stay was pre-planned.
+              \item \textit{Surgical admission:} Distinguishes post-surgical recovery from medical emergencies.
+              \item \textit{AIDS:} Chronic comorbidity representing severe immune system compromise.
+              \item \textit{Metastatic cancer:} Chronic comorbidity denoting advanced malignancy.
+              \item \textit{Lymphoma:} Hematological malignancy altering the immune baseline.
+          \end{itemize}
+
+    \item \textbf{Temporal Features:} High-frequency vitals and labs tracking physiological stability.
+          \begin{itemize}
+              \item \textit{Heart rate:} Cardiovascular metric indicating systemic stress or instability.
+              \item \textit{Systolic BP:} Maximum arterial pressure during heart contraction.
+              \item \textit{Diastolic BP:} Minimum arterial pressure completing the hemodynamic profile.
+              \item \textit{Temperature:} Vital parameter for detecting fever or severe hypothermia.
+              \item \textit{Urine output:} Critical indicator of systemic organ perfusion and renal function.
+              \item \textit{GCS (Eyes, Motor, Verbal):} Glasgow Coma Scale values.
+              \item \textit{WBC:} Laboratory marker for immune response or systemic inflammation.
+              \item \textit{BUN:} Standard test for assessing kidney function and hydration status.
+              \item \textit{Bilirubin:} Evaluates liver function and identifies potential organ damage.
+              \item \textit{Bicarbonate:} Indicates the patient's metabolic state and acid-base balance.
+              \item \textit{Potassium:} Essential for maintaining proper cardiac electrical function.
+              \item \textit{Sodium:} Key for regulating systemic fluid balance.
+              \item \textit{FiO$_2$:} Concentration of oxygen actively inhaled by the patient.
+              \item \textit{PO$_2$:} Reflects the effectiveness of oxygen transfer into the bloodstream.
+          \end{itemize}
+\end{itemize}
+
+Because clinical data is notoriously noisy, extensive harmonization was required. Disparate concepts (such as temperatures recorded in both Celsius and Fahrenheit) were standardized, and clear unphysiological values (such as negative blood pressures or heart rates $\ge300$ bpm) were discarded as artifacts. Furthermore, due to MIMIC-III's privacy protocols which artificially shift the ages of patients over 89 to 300 years old, all patient ages greater than 80 were clipped to exactly 80 years.
+
+The temporal nature of ICU monitoring means that variables are sampled at vastly different rates, resulting in highly irregular time series with significant missing observations. To address this, the data was structured into a $22\times48$ observation matrix for each patient.  Static features, such as admission type and age, were replicated across all 48 hourly time steps.  For temporal variables containing multiple measurements within a single hour, the values were averaged, except for urine output, which was summed.  To resolve missing hourly data points, a combination of forward and backward filling imputation was applied to the time series.  In instances where a patient was missing outstanding $FiO_{2}$ values, they were imputed to a standard, normal baseline value of 0.2 (21\%).  Finally, if a patient lacked a single recorded observation for a specific variable across their entire stay, the entire physiological time series for that feature was imputed using the overall empirical mean of the cohort.
+
+\subsubsection{Implementation}
+In the Tree Network Tree architecture used on the \textbf{UCI Wisconsin breast cancer} dataset, I had to replace the Network part with the Convolutional Network used in the ISeeU paper\cite{caicedo2019iseeu}. They made the code publicly available on GitHub\footnote{https://github.com/williamcaicedo/ISeeU}, so I used their model implementation directly.
+
+The Li et al. paper\cite{li2020tnt} does not explicitly describe how they shift from the linear, static input of the first dataset to the temporal sequences of MIMIC-III when integrating it in the TNT architecture. In order to preserve the temporal aspect of the data I choose to do the tree embeddings by breaking each sample in 48 different samples, where each represents one hour of a patient stay. I trained a GBDT on the static dataset and embedded each hour separately.
+
+I made a modification in the original ConvNet to accept the new input size and add pass every single hour vector of leaf indices through the same Embeddings layer. This ensures that the convolutional filters can be still applied to the temporal axis of the input.
+
+For the dGBDT student I chose to flatten the input space in single $1056 (22\times48)$ vector, so the tree-based ensemble could use it. The flow is islustrated in Figure \ref{fig:tnt_mimic_iii}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{assets/TNT_MIMIC_III.drawio.pdf}
+    \caption{The TNT architecture adapted for the MIMIC-III dataset. The process flows from left to right: raw data is processed by XGBoost to generate leaf indices, which are then fed into a ConvNet teacher. The ConvNet's outputs (soft labels) and flattened inputs are used to train the dGBDT student model via distillation.}
+    \label{fig:tnt_mimic_iii}
+\end{figure}
+
+

@@ -69,12 +69,15 @@
     urlcolor={blue}
 ]{hyperref}
 
-% Simboluri matematice codificate Unicode
-\usepackage[warnings-off={mathtools-colon,mathtools-overbracket}]{unicode-math}
-
 % Comenzi matematice
 \usepackage{amsmath}
 \usepackage{mathtools}
+
+% Simboluri matematice codificate Unicode
+\usepackage[warnings-off={mathtools-colon,mathtools-overbracket}]{unicode-math}
+
+
+\usepackage{graphicx}
 
 % Formule matematice
 \newcommand{\bigO}[1]{\symcal{O}\left(#1\right)}
@@ -110,7 +113,7 @@
 \let\ps@plain
 
 % Pagina de titlu
-\include{0-title}
+%\include{0-title}
 \restoregeometry
 \newgeometry{
   margin=2.5cm
@@ -126,7 +129,7 @@
 \addtocounter{page}{1}
 
 % Rezumatul
-\include{0-abstract}
+%\include{0-abstract}
 
 \tableofcontents
 
@@ -135,10 +138,10 @@
 \pagestyle{main}
 \let\ps@plain\ps@main
 
-\include{1-introduction}
-\include{2-related_work}
+%\include{1-introduction}
+%\include{2-related_work}
 \include{3-experiments}
 
-\printbibliography[heading=bibintoc]
+%\printbibliography[heading=bibintoc]
 
 \end{document}

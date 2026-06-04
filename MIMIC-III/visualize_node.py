@@ -2,13 +2,13 @@
 Visualize internal node weights of a distilled dGBDT as a feature heatmap.
 
 For normal distillation  (models/distill)   : 22 × 48 (feature × hour)
-For aggregated distillation (models/distil_agg): 22 × 4  (feature × stat)
+For aggregated distillation (models/distill_agg): 22 × 4  (feature × stat)
   - static features are broadcast (same weight across all 4 columns)
   - temporal features use their [min, max, mean, var] weights per column
 
 Usage:
   python visualize_node.py --model distill    --fold 0 --tree 0 --node 0
-  python visualize_node.py --model distil_agg --fold 0 --tree 2 --node 5
+  python visualize_node.py --model distill_agg --fold 0 --tree 0 --node 0
 """
 
 import argparse
@@ -48,20 +48,29 @@ TREE_DEPTH = 5
 
 def load_model(model_type: str, fold_idx: int) -> dGBDT:
     if model_type == 'distill':
-        input_dim = N_FEATURES * N_HOURS
         path = f'models/distill/dgbdt_student_fold_{fold_idx}.pt'
     else:
-        input_dim = N_STATIC + N_TEMPORAL * 4
-        path = f'models/distil_agg/dgbdt_student_fold_{fold_idx}.pt'
+        path = f'models/distill_agg/dgbdt_student_fold_{fold_idx}.pt'
 
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model file not found: {path}")
 
-    model = dGBDT(input_dim=input_dim, num_trees=5, tree_depth=TREE_DEPTH,
+    state = torch.load(path, map_location='cpu')
+
+    # Infer hyperparameters from the checkpoint instead of hardcoding them.
+    # inner_nodes[0].weight shape: (n_internal_nodes, 2*input_dim + 1)
+    # leaf_nodes.weight shape:     (output_dim, 2^depth)
+    w = state['trees.0.inner_nodes.0.weight']
+    input_dim = (w.shape[1] - 1) // 2
+    n_internal = w.shape[0]                         # 2^depth - 1
+    tree_depth = int(np.log2(n_internal + 1))
+    num_trees = max(int(k.split('.')[1]) for k in state if k.startswith('trees.')) + 1
+
+    model = dGBDT(input_dim=input_dim, num_trees=num_trees, tree_depth=tree_depth,
                   lamda=1e-3, use_cuda=False)
-    model.load_state_dict(torch.load(path, map_location='cpu'))
+    model.load_state_dict(state)
     model.eval()
-    return model
+    return model, input_dim
 
 
 def extract_node_weights(model: dGBDT, tree_idx: int, node_idx: int,
@@ -162,7 +171,7 @@ def plot_heatmap(heatmap: np.ndarray, model_type: str,
 def main() -> None:
     parser = argparse.ArgumentParser(
         description='Heatmap of dGBDT internal node weights')
-    parser.add_argument('--model', choices=['distill', 'distil_agg'], required=True,
+    parser.add_argument('--model', choices=['distill', 'distill_agg'], required=True,
                         help='Which distilled model to load')
     parser.add_argument('--fold',  type=int, default=0,
                         help='Fold index (0-4)')
@@ -174,24 +183,35 @@ def main() -> None:
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    n_internal = 2 ** TREE_DEPTH - 1  # 31 for depth=5
-    if not (0 <= args.tree < 5):
-        parser.error(f'--tree must be in [0, 4]')
-    if not (0 <= args.node < n_internal):
-        parser.error(f'--node must be in [0, {n_internal - 1}] for depth={TREE_DEPTH}')
     if not (0 <= args.fold < 5):
         parser.error(f'--fold must be in [0, 4]')
 
-    input_dim = (N_FEATURES * N_HOURS if args.model == 'distill'
-                 else N_STATIC + N_TEMPORAL * 4)
+    model, input_dim = load_model(args.model, args.fold)
 
-    model = load_model(args.model, args.fold)
+    # Auto-detect model type based on inferred input_dim
+    actual_model_type = args.model
+    if input_dim == N_FEATURES * N_HOURS and args.model != 'distill':
+        print(f"Notice: Detected input_dim={input_dim}, switching heatmap layout to 'distill'.")
+        actual_model_type = 'distill'
+    elif input_dim == (N_STATIC + N_TEMPORAL * 4) and args.model != 'distill_agg':
+        print(f"Notice: Detected input_dim={input_dim}, switching heatmap layout to 'distill_agg'.")
+        actual_model_type = 'distill_agg'
+
+    num_trees = len(model.trees)
+    tree_depth = model.trees[0].depth
+    n_internal = 2 ** tree_depth - 1
+
+    if not (0 <= args.tree < num_trees):
+        parser.error(f'--tree must be in [0, {num_trees - 1}]')
+    if not (0 <= args.node < n_internal):
+        parser.error(f'--node must be in [0, {n_internal - 1}] for depth={tree_depth}')
+
     feature_w = extract_node_weights(model, args.tree, args.node, input_dim)
 
-    heatmap = (build_heatmap_temporal(feature_w) if args.model == 'distill'
+    heatmap = (build_heatmap_temporal(feature_w) if actual_model_type == 'distill'
                else build_heatmap_agg(feature_w))
 
-    plot_heatmap(heatmap, args.model, args.fold, args.tree, args.node)
+    plot_heatmap(heatmap, actual_model_type, args.fold, args.tree, args.node)
 
 
 if __name__ == '__main__':
