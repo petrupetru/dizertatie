@@ -19,7 +19,7 @@ from tensorflow.keras import layers, regularizers, optimizers
 from tensorflow.keras.layers import (Input, Dense, Activation, BatchNormalization,
                                      Flatten, Conv2D, AveragePooling2D, Dropout)
 from tensorflow.keras.models import Model
-from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 
 import pandas as pd
 import matplotlib
@@ -66,7 +66,7 @@ def create_model(input_shape, use_dropout=True, conv_drop_prob=0.45, fc_drop_pro
     X = BatchNormalization(axis=1, name='bn3')(X)
 
     # Output
-    X = Dense(1, activation='sigmoid', name='fc2', kernel_regularizer=regularizers.l2(l2_penalty))(X)
+    X = Dense(1, activation='sigmoid', name='fc2')(X)
 
     return Model(inputs=X_input, outputs=X, name='icu_mortality_conv')
 
@@ -152,8 +152,8 @@ def train():
 
     predictions, ground_truth, fold_history = [], [], []
 
-    batch_size   = 32
-    epochs       = 50
+    batch_size   = 256
+    epochs       = 100
     class_weight = {0: 1, 1: 10}
 
     for i, (train_idx, val_idx) in enumerate(cv_idx):
@@ -162,7 +162,7 @@ def train():
 
         ground_truth.append(y[val_idx])
 
-        model = create_model((1, n_predictors, 48))
+        model = create_model((1, n_predictors, 48), l2_penalty=0.001)
         sgd = optimizers.SGD(learning_rate=0.01, decay=1e-7, momentum=0.9, nesterov=True)
         model.compile(
             optimizer=sgd, 
@@ -175,9 +175,11 @@ def train():
         Xtr = np.nan_to_num((X[train_idx] - fold_mean[i]) / (fold_std[i] + 1e-8))
         Xvl = np.nan_to_num((X[val_idx]   - fold_mean[i]) / (fold_std[i] + 1e-8))
 
-        ckpt = ModelCheckpoint(f'models/iseeu/kfold{i}_best.keras', monitor='val_loss', save_best_only=True)
+        ckpt = ModelCheckpoint(f'models/iseeu/kfold{i}_best.keras', monitor='val_auprc', save_best_only=True, mode='max')
+        early_stop = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True, mode='min')
+        reduce_lr = ReduceLROnPlateau(monitor='val_auprc', factor=0.5, patience=7, mode='max', verbose=1)
         hist = model.fit(Xtr, y[train_idx], epochs=epochs, batch_size=batch_size,
-                         class_weight=class_weight, callbacks=[ckpt],
+                         class_weight=class_weight, callbacks=[ckpt, early_stop, reduce_lr],
                          validation_data=(Xvl, y[val_idx]), verbose=1)
         fold_history.append(hist)
 

@@ -150,9 +150,9 @@ def run_cv():
         )
 
         ckpt_path = f'models/tnt/fold{i}_best.keras'
-        ckpt = ModelCheckpoint(ckpt_path, monitor='val_auroc', save_best_only=True, mode='max')
-        early_stop = EarlyStopping(monitor='val_auroc', patience=10, restore_best_weights=True, mode='max')
-        reduce_lr = ReduceLROnPlateau(monitor='val_auroc', factor=0.5, patience=5, mode='max', verbose=1)
+        ckpt = ModelCheckpoint(ckpt_path, monitor='val_auprc', save_best_only=True, mode='max')
+        early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, mode='min')
+        reduce_lr = ReduceLROnPlateau(monitor='val_auprc', factor=0.5, patience=5, mode='max', verbose=1)
         
         model.fit(
             L_tr, y[train_idx], 

@@ -142,8 +142,11 @@ def train_dgbdt_fold(
     mse = nn.MSELoss()
 
     epoch_losses = []
-    best_auroc = 0.0
+    best_val_loss = float("inf")
+    best_auprc = 0.0
     best_state = None
+    patience = 10
+    epochs_no_improve = 0
     for epoch in range(1, num_epochs + 1):
         model.train()
         running_loss = 0.0
@@ -204,8 +207,14 @@ def train_dgbdt_fold(
         epoch_auroc = roc_auc_score(val_labels, val_probs)
         epoch_auprc = average_precision_score(val_labels, val_probs)
 
-        if epoch_auroc > best_auroc:
-            best_auroc = epoch_auroc
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
+        if epoch_auprc > best_auprc:
+            best_auprc = epoch_auprc
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
 
         if verbose:
@@ -213,7 +222,13 @@ def train_dgbdt_fold(
                 f"dGBDT Epoch [{epoch:3d}/{num_epochs}]  "
                 f"Train Loss: {avg_train_loss:.6f}  Val Loss: {avg_val_loss:.6f}  "
                 f"Val AUROC: {epoch_auroc:.4f}  Val AUPRC: {epoch_auprc:.4f}"
+                + ("  *" if epochs_no_improve == 0 else "")
             )
+
+        if epochs_no_improve >= patience:
+            if verbose:
+                print(f"  Early stopping at epoch {epoch}.")
+            break
 
     if best_state:
         model.load_state_dict(best_state)
@@ -253,8 +268,8 @@ def train_kfold_dgbdt(
     lr: float = 1e-3,
     batch_size: int = 512,
     device: str = "cpu",
-    num_trees: int = 5,
-    depth: int = 5,
+    num_trees: int = 10,
+    depth: int = 4,
     lamda: float = 1e-3,
     seed: int = 42,
     verbose: bool = True,

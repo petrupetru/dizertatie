@@ -95,20 +95,21 @@ def run_distillation():
         # 5. Distillation Training
         student = dGBDT(
             input_dim=n_predictors * 48, 
-            num_trees=5, 
-            tree_depth=5, 
+            num_trees=6, 
+            tree_depth=3, 
             lamda=1e-3, 
             use_cuda=(device == "cuda")
         ).to(device)
         
-        optimizer = optim.Adam(student.parameters(), lr=1e-3)
+        optimizer = optim.Adam(student.parameters(), lr=1e-3, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=5, factor=0.5)
         mse = nn.MSELoss()
         
-        alpha = 0.5  # Distillation mixing parameter
-        temp  = 1.0  # Temperature softening (standard for probability-based distillation)
+        alpha = 0.8  # Distillation mixing parameter
+        temp  = 2.0  # Temperature softening (standard for probability-based distillation)
 
         best_auc = 0.0
+        best_val_loss = float("inf")
         best_prc = 0.0
         best_state = None
         patience = 10
@@ -180,15 +181,18 @@ def run_distillation():
             epoch_auc = roc_auc_score(val_labels_cat, val_probs_cat)
             epoch_prc = average_precision_score(val_labels_cat, val_probs_cat)
 
-            scheduler.step(epoch_auc)
+            scheduler.step(epoch_prc)
 
-            if epoch_auc > best_auc:
-                best_auc = epoch_auc
-                best_prc = epoch_prc
-                best_state = {k: v.clone() for k, v in student.state_dict().items()}
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
                 epochs_no_improve = 0
             else:
                 epochs_no_improve += 1
+
+            if epoch_prc > best_prc:
+                best_auc = epoch_auc
+                best_prc = epoch_prc
+                best_state = {k: v.clone() for k, v in student.state_dict().items()}
 
             print(
                 f"  Epoch [{epoch:3d}/100]  "

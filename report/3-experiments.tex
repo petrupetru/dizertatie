@@ -57,6 +57,24 @@ Tree models are more than capable to handle missing data so variations of the ex
 
 For each sparsity level I tested multiple tree-based, DNN and Tree-NN fusions to see if the distillation has any real advantages over the normal models. For this dataset, the results were not very conclusive because most models performed really well. In Table \ref{cancer_table} we can see that all models that used some kind of tree ensamble acheived AUROC and AUPRC close to $0.99$
 
+The empirical results are presented in Table 4.1. On the fully complete dataset
+(0\% sparse), almost all models achieved high predictive performance, with AUROC and
+AUPRC values close to 0.99. However, as sparsity increased, standard neural networks
+(DNN) and single Soft Decision Trees (SDT) experienced significant degradation. At 40%
+sparsity, the SDT’s AUROC dropped to 0.8188, and the DNN’s AUROC fell to 0.8324.
+
+In contrast, the models utilizing a Tree-Network fusion with the default routing for sparse data obtained exceptional performance. The GBDT-DNN teacher
+model maintained an AUROC of 0.9811 with 40\% sparsity by leveraging XGBoost’s
+native split-finding embeddings. Most notably, the distilled dGBDT student models
+(DNN-dGBDT and GBDT-DNN-dGBDT) showed outstanding robustness, achieving
+AUROC scores of 0.9921 and 0.9910 respectively, and AUPRC scores above 0.9870 under
+40\% sparsity. These results demonstrate that the proposed distillation pipeline successfully transfers the sparsity-robust reasoning of GBDTs to interpretable soft tree ensembles
+without compromising predictive accuracy.
+
+It is also worth mentioning that the default, publicly available implementation of the SDT without the mask for missing values was first used for testing, and the $nan$ values were imputed with the mean of the train split for each feature. The result ware 
+
+
+
 \begin{table}[htbp]
     \centering
     \renewcommand{\arraystretch}{1.5}
@@ -133,7 +151,7 @@ The temporal nature of ICU monitoring means that variables are sampled at vastly
 \subsubsection{Implementation}
 In the Tree Network Tree architecture used on the \textbf{UCI Wisconsin breast cancer} dataset, I had to replace the Network part with the Convolutional Network used in the ISeeU paper\cite{caicedo2019iseeu}. They made the code publicly available on GitHub\footnote{https://github.com/williamcaicedo/ISeeU}, so I used their model implementation directly.
 
-The Li et al. paper\cite{li2020tnt} does not explicitly describe how they shift from the linear, static input of the first dataset to the temporal sequences of MIMIC-III when integrating it in the TNT architecture. In order to preserve the temporal aspect of the data I choose to do the tree embeddings by breaking each sample in 48 different samples, where each represents one hour of a patient stay. I trained a GBDT on the static dataset and embedded each hour separately.
+The Li et al. paper\cite{li2020tnt} does not explicitly describe how they shift from the linear, static input of the first dataset to the temporal sequences of MIMIC-III when integrating it in the TNT architecture. In order to preserve the temporal aspect of the data I choose to do the tree embeddings by breaking each sample in 48 different samples, where each represents one hour of a patient stay.I trained a GBDT on the static dataset and embedded each hour separately.
 
 I made a modification in the original ConvNet to accept the new input size and add pass every single hour vector of leaf indices through the same Embeddings layer. This ensures that the convolutional filters can be still applied to the temporal axis of the input.
 
@@ -145,5 +163,27 @@ For the dGBDT student I chose to flatten the input space in single $1056 (22\tim
     \caption{The TNT architecture adapted for the MIMIC-III dataset. The process flows from left to right: raw data is processed by XGBoost to generate leaf indices, which are then fed into a ConvNet teacher. The ConvNet's outputs (soft labels) and flattened inputs are used to train the dGBDT student model via distillation.}
     \label{fig:tnt_mimic_iii}
 \end{figure}
+
+Again I measured the AUROC and AUPRC for a set of different experiments, in order to test the performance of various architectures based on trees, neural networks or fusion of both. 
+
+\begin{table}[h]
+\centering
+\renewcommand{\arraystretch}{1.5} % Adjusts row height to match the image's spacing
+\begin{tabular}{|l|l|l|l|}
+\hline
+\multicolumn{2}{|l|}{Methods} & \multicolumn{2}{l|}{Imputed} \\ \cline{3-4}
+\multicolumn{2}{|l|}{} & AUROC & AUPRC \\ \hline
+\multirow{2}{*}{T} & dGBDT & 0.7445 & 0.2378 \\ \cline{2-4}
+ & SDT & 0.8305 & 0.4107 \\ \hline
+N & Conv & 0.8484 & 0.4312 \\ \hline
+\multirow{2}{*}{T \& N} & GBDT-Conv & 0.8739 & 0.4796 \\ \cline{2-4}
+ & Conv-SDT & 0.8465 & 0.4159 \\ \hline
+\multirow{2}{*}{TNT} & GBDT-Conv-SDT & 0.8822 & 0.4818 \\ \cline{2-4}
+ & GBDT-Conv-dGBT & 0.8732 & 0.4794 \\ \hline
+\end{tabular}
+\caption{Results for the MIMIC-III dataset with different models}
+\label{MIMIC-III_table}
+\end{table}
+
 
 

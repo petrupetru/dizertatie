@@ -135,6 +135,7 @@ def run_distillation():
         temp  = 1.0
 
         best_auc, best_prc, best_state = 0.0, 0.0, None
+        best_val_loss = float("inf")
         patience, epochs_no_improve   = 10, 0
 
         print("Training student dGBDT...")
@@ -190,15 +191,18 @@ def run_distillation():
             epoch_auc       = roc_auc_score(val_labels_cat, val_probs_cat)
             epoch_prc       = average_precision_score(val_labels_cat, val_probs_cat)
 
-            scheduler.step(epoch_auc)
+            scheduler.step(epoch_prc)
 
-            if epoch_auc > best_auc:
-                best_auc          = epoch_auc
-                best_prc          = epoch_prc
-                best_state        = {k: v.clone() for k, v in student.state_dict().items()}
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
                 epochs_no_improve = 0
             else:
                 epochs_no_improve += 1
+
+            if epoch_prc > best_prc:
+                best_auc          = epoch_auc
+                best_prc          = epoch_prc
+                best_state        = {k: v.clone() for k, v in student.state_dict().items()}
 
             print(
                 f"  Epoch [{epoch:3d}/100]  "

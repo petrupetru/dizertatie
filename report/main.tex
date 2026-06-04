@@ -113,7 +113,7 @@
 \let\ps@plain
 
 % Pagina de titlu
-%\include{0-title}
+\include{0-title}
 \restoregeometry
 \newgeometry{
   margin=2.5cm
@@ -129,7 +129,7 @@
 \addtocounter{page}{1}
 
 % Rezumatul
-%\include{0-abstract}
+\include{0-abstract}
 
 \tableofcontents
 
@@ -138,9 +138,10 @@
 \pagestyle{main}
 \let\ps@plain\ps@main
 
-%\include{1-introduction}
-%\include{2-related_work}
+\include{1-introduction}
+\include{2-related_work}
 \include{3-experiments}
+\include{experiments_refactored}
 
 %\printbibliography[heading=bibintoc]
 
